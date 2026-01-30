@@ -1,5 +1,6 @@
 package main
 
 func main() {
-	// TODO: implement BaseGraph
+	// MVP skeleton.
+	// Entry point will be implemented in later stages (simulator).
 }

@@ -1,0 +1,16 @@
+# Go
+/bin/
+*.exe
+*.out
+*.test
+GO_player
+
+# IDE
+.idea/
+.vscode/
+
+# Cursor
+.cursor/
+
+# OS
+.DS_Store
