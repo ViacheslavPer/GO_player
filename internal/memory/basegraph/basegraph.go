@@ -35,3 +35,11 @@ func (graph *BaseGraph) GetEdges(id int64) map[int64]int64 {
 	}
 	return graph.edges[id]
 }
+
+func (graph *BaseGraph) GetAllIDs() []int64 {
+	ids := make([]int64, 0, len(graph.edges))
+	for id := range graph.edges {
+		ids = append(ids, id)
+	}
+	return ids
+}
