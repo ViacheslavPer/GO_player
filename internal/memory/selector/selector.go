@@ -8,20 +8,18 @@ import (
 )
 
 type Selector struct {
-	runtimeGraph  *runtime.RuntimeGraph
 	giniThreshold float64
 	topK          int64
 }
 
-func Newselector(runtimeGraph *runtime.RuntimeGraph) *Selector {
+func NewSelector() *Selector {
 	return &Selector{
-		runtimeGraph:  runtimeGraph,
 		giniThreshold: 0.5,
 		topK:          10,
 	}
 }
 
-func NewSelectorWithParameters(runtimeGraph *runtime.RuntimeGraph, giniThreshold float64, topK int64) *Selector {
+func NewSelectorWithParameters(giniThreshold float64, topK int64) *Selector {
 	if topK <= 0 {
 		topK = 10
 	}
@@ -30,7 +28,6 @@ func NewSelectorWithParameters(runtimeGraph *runtime.RuntimeGraph, giniThreshold
 	}
 
 	return &Selector{
-		runtimeGraph:  runtimeGraph,
 		giniThreshold: giniThreshold,
 		topK:          topK,
 	}
@@ -47,8 +44,8 @@ func computeGini(probs map[int64]float64) float64 {
 	return gini
 }
 
-func (s *Selector) Next(fromID int64) (toID int64, ok bool) {
-	probs := s.runtimeGraph.GetEdges(fromID)
+func (s *Selector) Next(fromID int64, runtimeGraph *runtime.RuntimeGraph) (toID int64, ok bool) {
+	probs := runtimeGraph.GetEdges(fromID)
 	if len(probs) == 0 {
 		return 0, false
 	}

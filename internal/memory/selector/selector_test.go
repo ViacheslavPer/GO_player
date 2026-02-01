@@ -27,13 +27,13 @@ func TestNext_NoEdges_ReturnsFalse(t *testing.T) {
 	base := basegraph.NewBaseGraph()
 	r := runtime.NewRuntimeGraph()
 	r.BuildFromBase(base)
-	sel := Newselector(r)
-	toID, ok := sel.Next(1)
+	sel := NewSelector()
+	toID, ok := sel.Next(1, r)
 	if ok {
-		t.Errorf("Next(1) = (%d, true), want (0, false)", toID)
+		t.Errorf("Next(1, r) = (%d, true), want (0, false)", toID)
 	}
 	if toID != 0 {
-		t.Errorf("Next(1) toID = %d, want 0", toID)
+		t.Errorf("Next(1, r) toID = %d, want 0", toID)
 	}
 }
 
@@ -41,13 +41,13 @@ func TestNext_FromIDWithNoOutgoingEdges_ReturnsFalse(t *testing.T) {
 	r := buildRuntimeGraph(map[int64]map[int64]int64{
 		1: {10: 1, 20: 1},
 	})
-	sel := Newselector(r)
-	toID, ok := sel.Next(99)
+	sel := NewSelector()
+	toID, ok := sel.Next(99, r)
 	if ok {
-		t.Errorf("Next(99) = (%d, true), want (0, false)", toID)
+		t.Errorf("Next(99, r) = (%d, true), want (0, false)", toID)
 	}
 	if toID != 0 {
-		t.Errorf("Next(99) toID = %d, want 0", toID)
+		t.Errorf("Next(99, r) toID = %d, want 0", toID)
 	}
 }
 
@@ -66,7 +66,7 @@ func TestComputeGini_UniformDistribution_LowGini(t *testing.T) {
 	}
 }
 
-func TestComputeGini_DominantDistribution_HighConcentration(t *testing.T) {
+func TestComputeGini_DominantDistribution_ZeroGini(t *testing.T) {
 	probs := map[int64]float64{1: 1.0}
 	gini := computeGini(probs)
 	if gini < 0 || gini > 1 {
@@ -85,20 +85,20 @@ func TestComputeGini_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
-func TestNext_UsesWeightedWhenGiniBelowThreshold(t *testing.T) {
+func TestNext_UsesWeightedWhenGiniBelowOrEqualThreshold(t *testing.T) {
 	rand.New(rand.NewSource(42))
 	r := buildRuntimeGraph(map[int64]map[int64]int64{
 		1: {10: 1, 20: 1},
 	})
-	sel := Newselector(r)
+	sel := NewSelector()
 	allowed := map[int64]bool{10: true, 20: true}
 	for i := 0; i < 50; i++ {
-		toID, ok := sel.Next(1)
+		toID, ok := sel.Next(1, r)
 		if !ok {
-			t.Fatalf("Next(1) returned false on iteration %d", i)
+			t.Fatalf("Next(1, r) returned false on iteration %d", i)
 		}
 		if !allowed[toID] {
-			t.Errorf("Next(1) = %d, want 10 or 20", toID)
+			t.Errorf("Next(1, r) = %d, want 10 or 20", toID)
 		}
 	}
 }
@@ -108,15 +108,15 @@ func TestNext_UsesTopKWhenGiniAboveThreshold(t *testing.T) {
 	r := buildRuntimeGraph(map[int64]map[int64]int64{
 		1: {10: 5, 20: 3, 30: 2},
 	})
-	sel := NewSelectorWithParameters(r, 0.5, 2)
+	sel := NewSelectorWithParameters(0.5, 2)
 	allowed := map[int64]bool{10: true, 20: true}
 	for i := 0; i < 50; i++ {
-		toID, ok := sel.Next(1)
+		toID, ok := sel.Next(1, r)
 		if !ok {
-			t.Fatalf("Next(1) returned false on iteration %d", i)
+			t.Fatalf("Next(1, r) returned false on iteration %d", i)
 		}
 		if !allowed[toID] {
-			t.Errorf("Next(1) = %d, want 10 or 20 (top K=2)", toID)
+			t.Errorf("Next(1, r) = %d, want 10 or 20 (top K=2)", toID)
 		}
 	}
 }
@@ -155,7 +155,7 @@ func TestSelector_DoesNotMutateRuntimeGraph(t *testing.T) {
 	r := buildRuntimeGraph(map[int64]map[int64]int64{
 		1: {10: 1, 20: 1},
 	})
-	sel := Newselector(r)
+	sel := NewSelector()
 	edgesBefore := r.GetEdges(1)
 	sumBefore := 0.0
 	for _, p := range edgesBefore {
@@ -163,7 +163,7 @@ func TestSelector_DoesNotMutateRuntimeGraph(t *testing.T) {
 	}
 	rand.New(rand.NewSource(1))
 	for i := 0; i < 10; i++ {
-		sel.Next(1)
+		sel.Next(1, r)
 	}
 	edgesAfter := r.GetEdges(1)
 	sumAfter := 0.0
@@ -178,17 +178,36 @@ func TestSelector_DoesNotMutateRuntimeGraph(t *testing.T) {
 	}
 }
 
+func TestNewSelector_DefaultParameters(t *testing.T) {
+	sel := NewSelector()
+	if sel.giniThreshold != 0.5 {
+		t.Errorf("giniThreshold = %g, want 0.5", sel.giniThreshold)
+	}
+	if sel.topK != 10 {
+		t.Errorf("topK = %d, want 10", sel.topK)
+	}
+}
+
 func TestNewSelectorWithParameters_InvalidValues_AppliesDefaults(t *testing.T) {
-	r := runtime.NewRuntimeGraph()
-	sel := NewSelectorWithParameters(r, 0.0, 0)
+	sel := NewSelectorWithParameters(0.0, 0)
 	if sel.giniThreshold != 0.5 {
 		t.Errorf("giniThreshold = %g, want 0.5 (default)", sel.giniThreshold)
 	}
 	if sel.topK != 10 {
 		t.Errorf("topK = %d, want 10 (default)", sel.topK)
 	}
-	sel2 := NewSelectorWithParameters(r, 1.0, -1)
+	sel2 := NewSelectorWithParameters(1.0, -1)
 	if sel2.giniThreshold != 0.5 || sel2.topK != 10 {
-		t.Errorf("invalid giniThreshold/topK should get defaults, got %g, %d", sel2.giniThreshold, sel2.topK)
+		t.Errorf("invalid params: giniThreshold=%g topK=%d, want defaults 0.5, 10", sel2.giniThreshold, sel2.topK)
+	}
+}
+
+func TestNewSelectorWithParameters_ValidValues_KeepsParameters(t *testing.T) {
+	sel := NewSelectorWithParameters(0.7, 5)
+	if sel.giniThreshold != 0.7 {
+		t.Errorf("giniThreshold = %g, want 0.7", sel.giniThreshold)
+	}
+	if sel.topK != 5 {
+		t.Errorf("topK = %d, want 5", sel.topK)
 	}
 }
