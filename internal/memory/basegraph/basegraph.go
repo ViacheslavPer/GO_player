@@ -13,19 +13,19 @@ func NewBaseGraph() *BaseGraph {
 	}
 }
 
-func (graph *BaseGraph) Reinforce(fid, sid int64) {
-	if graph.edges[fid] == nil {
-		graph.edges[fid] = make(map[int64]int64)
+func (graph *BaseGraph) Reinforce(fromID, toID int64) {
+	if graph.edges[fromID] == nil {
+		graph.edges[fromID] = make(map[int64]int64)
 	}
-	graph.edges[fid][sid]++
+	graph.edges[fromID][toID]++
 }
 
-func (graph *BaseGraph) Penalty(fid, sid int64) {
-	if graph.edges[fid] == nil {
+func (graph *BaseGraph) Penalty(fromID, toID int64) {
+	if graph.edges[fromID] == nil {
 		return
 	}
-	if graph.edges[fid][sid] > 0 {
-		graph.edges[fid][sid]--
+	if graph.edges[fromID][toID] > 0 {
+		graph.edges[fromID][toID]--
 	}
 }
 
