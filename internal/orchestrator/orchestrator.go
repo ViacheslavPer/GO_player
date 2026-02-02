@@ -16,7 +16,7 @@ func NewOrchestrator() *Orchestrator {
 	bg := basegraph.NewBaseGraph()
 
 	rg := runtime.NewRuntimeGraph()
-	rg.BuildFromBase(bg)
+	rg.CopyBase(bg, 0, "")
 
 	s := selector.NewSelector()
 
@@ -37,7 +37,7 @@ func (o *Orchestrator) Penalize(fromID, toID int64) {
 
 func (o *Orchestrator) RebuildRuntime() {
 	o.runtimeGraph = runtime.NewRuntimeGraph()
-	o.runtimeGraph.BuildFromBase(o.baseGraph)
+	o.runtimeGraph.CopyBase(o.baseGraph, 0, "")
 }
 
 func (o *Orchestrator) Next(fromID int64) (toID int64, ok bool) {

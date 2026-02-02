@@ -19,14 +19,14 @@ func buildRuntimeGraph(edges map[int64]map[int64]int64) *runtime.RuntimeGraph {
 		}
 	}
 	r := runtime.NewRuntimeGraph()
-	r.BuildFromBase(base)
+	r.CopyBase(base, 0, "")
 	return r
 }
 
 func TestNext_NoEdges_ReturnsFalse(t *testing.T) {
 	base := basegraph.NewBaseGraph()
 	r := runtime.NewRuntimeGraph()
-	r.BuildFromBase(base)
+	r.CopyBase(base, 0, "")
 	sel := NewSelector()
 	toID, ok := sel.Next(1, r)
 	if ok {
