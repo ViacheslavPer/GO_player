@@ -34,7 +34,7 @@ func NewSelectorWithParameters(giniThreshold float64, topK int64) *Selector {
 }
 
 func computeGini(probs map[int64]float64) float64 {
-	var sumSquares float64 = 0.0
+	var sumSquares = 0.0
 
 	for _, p := range probs {
 		sumSquares += p * p
@@ -49,13 +49,12 @@ func (s *Selector) Next(fromID int64, runtimeGraph *runtime.RuntimeGraph) (toID 
 	if len(probs) == 0 {
 		return 0, false
 	}
-
 	gini := computeGini(probs)
 	if gini > s.giniThreshold {
 		return selectTopK(probs, int(s.topK))
-	} else {
-		return selectWeighted(probs)
 	}
+
+	return selectWeighted(probs)
 }
 
 func selectTopK(probs map[int64]float64, k int) (int64, bool) {

@@ -1,12 +1,10 @@
 package playback
 
-// PlaybackChain manages back/forward navigation.
-// Does NOT know about memory or graphs.
 type PlaybackChain struct {
-	BackStack      []int64 //хранить историю предыдущих треков
-	Current        int64   //текущий трек
-	ForwardStack   []int64 //хранить историю вперед после_Back()
-	LearningFrozen bool    //заморозка обучения
+	BackStack      []int64
+	Current        int64
+	ForwardStack   []int64
+	LearningFrozen bool
 }
 
 func (pc *PlaybackChain) Back() (int64, bool) {
@@ -42,9 +40,15 @@ func (pc *PlaybackChain) Forward() (int64, bool) {
 }
 
 func (pc *PlaybackChain) FreezeLearning() {
+	if pc.LearningFrozen {
+		return
+	}
 	pc.LearningFrozen = true
 }
 
 func (pc *PlaybackChain) UnfreezeLearning() {
+	if !pc.LearningFrozen {
+		return
+	}
 	pc.LearningFrozen = false
 }
