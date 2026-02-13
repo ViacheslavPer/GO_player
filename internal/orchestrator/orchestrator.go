@@ -208,3 +208,20 @@ func (o *Orchestrator) PlayBack() (int64, bool) {
 
 	return id, true
 }
+
+// Getter methods for testing (read-only access to internal state)
+func (o *Orchestrator) BaseGraph() *basegraph.BaseGraph {
+	return o.baseGraph
+}
+
+func (o *Orchestrator) RuntimeGraph() *runtime.RuntimeGraph {
+	o.runtimeGraphMutex.RLock()
+	defer o.runtimeGraphMutex.RUnlock()
+	return o.runtimeGraph
+}
+
+func (o *Orchestrator) PlaybackChain() *playback.PlaybackChain {
+	o.playbackMutex.Lock()
+	defer o.playbackMutex.Unlock()
+	return o.playbackChain
+}

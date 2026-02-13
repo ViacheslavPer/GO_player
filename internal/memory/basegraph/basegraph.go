@@ -33,7 +33,7 @@ func (graph *BaseGraph) Penalty(fromID, toID int64) {
 	}
 	if graph.edges[0] != nil {
 		if graph.edges[0][toID] > 0 {
-			graph.edges[fromID][toID]--
+			graph.edges[0][toID]--
 		}
 	}
 }
