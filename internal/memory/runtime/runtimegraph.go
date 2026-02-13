@@ -126,6 +126,14 @@ func (graph *RuntimeGraph) RebuildFromBase(base *basegraph.BaseGraph, buildReaso
 	graph.copyBase(base, graph.buildVersion, buildReason)
 }
 
+// CopyBase is an exported, concurrency-safe wrapper used primarily in tests.
+// It delegates to the internal copyBase implementation under the graph mutex.
+func (graph *RuntimeGraph) CopyBase(base *basegraph.BaseGraph, buildVersion int64, buildReason string) {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	graph.copyBase(base, buildVersion, buildReason)
+}
+
 func (graph *RuntimeGraph) copyBase(base *basegraph.BaseGraph, buildVersion int64, buildReason string) {
 	graph.edges = make(map[int64]map[int64]float64)
 

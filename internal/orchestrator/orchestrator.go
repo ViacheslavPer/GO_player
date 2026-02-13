@@ -7,13 +7,13 @@ import (
 	"GO_player/internal/playback"
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Orchestrator struct {
 	baseGraph           *basegraph.BaseGraph
-	runtimeGraph        *runtime.RuntimeGraph
-	runtimeGraphMutex   sync.RWMutex
+	runtimeGraph        atomic.Pointer[runtime.RuntimeGraph]
 	runtimeBuildVersion int64
 	maxRuntimeGraphAge  time.Duration
 	maxRuntimeGraphDiff float64
@@ -33,39 +33,56 @@ func NewOrchestrator() *Orchestrator {
 
 	bg := basegraph.NewBaseGraph()
 
+	s := selector.NewSelector()
+
 	rg := runtime.NewRuntimeGraph()
 	rg.BuildFromBase(bg)
 
-	s := selector.NewSelector()
-
-	return &Orchestrator{
+	o := &Orchestrator{
 		baseGraph:           bg,
-		runtimeGraph:        rg,
 		maxRuntimeGraphAge:  time.Hour,
-		runtimeGraphMutex:   sync.RWMutex{},
 		maxRuntimeGraphDiff: 50,
-		diffChan:            make(chan struct{}),
+		diffChan:            make(chan struct{}, 5),
 		selector:            s,
 		playbackChain:       &playback.PlaybackChain{},
 		playbackMutex:       sync.Mutex{},
-		cooldownChan:        make(chan struct{}),
+		cooldownChan:        make(chan struct{}, 1),
 		wg:                  wg,
 		ctx:                 ctx,
 		cancel:              cancel,
 	}
+
+	o.runtimeGraph.Store(rg)
+
+	return o
 }
 
 func (o *Orchestrator) RebuildRuntime(rebuildReason string) {
-	o.runtimeGraphMutex.Lock()
-	defer o.runtimeGraphMutex.Unlock()
-	runtimePenalty := o.runtimeGraph.GetPenalty()
+	current := o.runtimeGraph.Load()
+	if current == nil {
+		return
+	}
+
+	runtimePenalty := current.GetPenalty()
 	for fromID := range runtimePenalty {
 		for toID := range runtimePenalty[fromID] {
 			o.baseGraph.Penalty(fromID, toID)
 		}
 	}
-	o.runtimeGraph = runtime.NewRuntimeGraph()
-	o.runtimeGraph.RebuildFromBase(o.baseGraph, rebuildReason)
+
+	o.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	o.ctx = ctx
+	o.cancel = cancel
+	o.diffChan = make(chan struct{}, 5)
+	o.cooldownChan = make(chan struct{}, 1)
+
+	newRG := runtime.NewRuntimeGraph()
+	newRG.RebuildFromBase(o.baseGraph, rebuildReason)
+	o.runtimeGraph.Store(newRG)
+
+	o.Start()
 }
 
 func (o *Orchestrator) Start() {
@@ -103,7 +120,12 @@ func (o *Orchestrator) manageRuntimeGraphTS() {
 		case <-o.ctx.Done():
 			return
 		case <-ticker.C:
-			runtimeGraphAge := time.Since(o.runtimeGraph.GetTimestamp())
+			rg := o.runtimeGraph.Load()
+			if rg == nil {
+				continue
+			}
+
+			runtimeGraphAge := time.Since(rg.GetTimestamp())
 			if runtimeGraphAge > o.maxRuntimeGraphAge {
 				o.RebuildRuntime("time to live is up")
 			}
@@ -118,7 +140,12 @@ func (o *Orchestrator) manageRuntimeGraphDiffts() {
 		case <-o.ctx.Done():
 			return
 		case <-o.diffChan:
-			runtimeGraphDiffts := o.runtimeGraph.GetDiffts()
+			rg := o.runtimeGraph.Load()
+			if rg == nil {
+				continue
+			}
+
+			runtimeGraphDiffts := rg.GetDiffts()
 			if runtimeGraphDiffts > o.maxRuntimeGraphDiff {
 				o.RebuildRuntime("diff limit exceeded")
 			}
@@ -126,11 +153,34 @@ func (o *Orchestrator) manageRuntimeGraphDiffts() {
 	}
 }
 
+func (o *Orchestrator) addChainSignal(chain chan struct{}) {
+	o.wg.Add(1)
+	defer o.wg.Done()
+	select {
+	case <-o.ctx.Done():
+		return
+	case chain <- struct{}{}:
+		return
+	}
+}
+
 func (o *Orchestrator) Learn(fromID, toID int64) {
-	o.cooldownChan <- struct{}{}
-	if !o.playbackChain.LearningFrozen {
-		o.baseGraph.Reinforce(fromID, toID)
-		o.runtimeGraph.Reinforce(fromID, toID)
+	go o.addChainSignal(o.cooldownChan)
+
+	o.playbackMutex.Lock()
+	learningFrozen := o.playbackChain.LearningFrozen
+	o.playbackMutex.Unlock()
+
+	if learningFrozen {
+		return
+	}
+
+	o.baseGraph.Reinforce(fromID, toID)
+
+	rg := o.runtimeGraph.Load()
+	if rg != nil {
+		rg.Reinforce(fromID, toID)
+		go o.addChainSignal(o.diffChan)
 	}
 }
 
@@ -142,15 +192,25 @@ func (o *Orchestrator) addCooldown(fromID, toID int64, value float64) {
 	if value <= 0.0 {
 		value = 1.0
 	}
-	o.runtimeGraph.AddCooldown(fromID, toID, value)
+	rg := o.runtimeGraph.Load()
+	if rg != nil {
+		rg.AddCooldown(fromID, toID, value)
+	}
 }
 
 func (o *Orchestrator) reduceCooldown() {
-	o.runtimeGraph.ReduceCooldown()
+	rg := o.runtimeGraph.Load()
+	if rg != nil {
+		rg.ReduceCooldown()
+	}
 }
 
 func (o *Orchestrator) runtimeGraphPenalty(fromID, toID int64) {
-	o.runtimeGraph.Penalty(fromID, toID)
+	rg := o.runtimeGraph.Load()
+	if rg != nil {
+		rg.Penalty(fromID, toID)
+		go o.addChainSignal(o.diffChan)
+	}
 }
 
 func (o *Orchestrator) PlayNext() (int64, bool) {
@@ -170,7 +230,12 @@ func (o *Orchestrator) generateNext() (int64, bool) {
 		fromID = o.playbackChain.Current
 	}
 
-	toID, ok := o.selector.Next(fromID, o.runtimeGraph)
+	rg := o.runtimeGraph.Load()
+	if rg == nil {
+		return 0, false
+	}
+
+	toID, ok := o.selector.Next(fromID, rg)
 	if !ok {
 		return 0, false
 	}
@@ -214,9 +279,7 @@ func (o *Orchestrator) BaseGraph() *basegraph.BaseGraph {
 }
 
 func (o *Orchestrator) RuntimeGraph() *runtime.RuntimeGraph {
-	o.runtimeGraphMutex.RLock()
-	defer o.runtimeGraphMutex.RUnlock()
-	return o.runtimeGraph
+	return o.runtimeGraph.Load()
 }
 
 func (o *Orchestrator) PlaybackChain() *playback.PlaybackChain {
