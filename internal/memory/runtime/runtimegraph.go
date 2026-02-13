@@ -7,12 +7,10 @@ import (
 )
 
 type RuntimeGraph struct {
+	mu           sync.RWMutex
 	edges        map[int64]map[int64]float64
-	edMu         sync.RWMutex
 	cooldowns    map[int64]map[int64]float64
-	cdMu         sync.RWMutex
 	penalties    map[int64]map[int64]float64
-	pMu          sync.RWMutex
 	buildVersion int64
 	buildReason  string
 	timestamp    time.Time
@@ -28,22 +26,44 @@ func NewRuntimeGraph() *RuntimeGraph {
 }
 
 func (graph *RuntimeGraph) GetBuildVersion() int64 {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
 	return graph.buildVersion
 }
 
 func (graph *RuntimeGraph) GetBuildReason() string {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
 	return graph.buildReason
 }
 
 func (graph *RuntimeGraph) GetTimestamp() time.Time {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
 	return graph.timestamp
 }
 
-func (graph *RuntimeGraph) GetDiffts() float64 { return graph.diffts }
+func (graph *RuntimeGraph) GetDiffts() float64 {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+	return graph.diffts
+}
 
-func (graph *RuntimeGraph) GetPenalty() map[int64]map[int64]float64 { return graph.penalties }
+func (graph *RuntimeGraph) GetPenalty() map[int64]map[int64]float64 {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+
+	copyOuter := make(map[int64]map[int64]float64, len(graph.penalties))
+	for fromID, inner := range graph.penalties {
+		copyOuter[fromID] = copyMap(inner) // ← вот тут ок
+	}
+	return copyOuter
+}
 
 func (graph *RuntimeGraph) Reinforce(fromID, toID int64) {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+
 	if graph.edges[fromID] == nil {
 		graph.edges[fromID] = make(map[int64]float64)
 	}
@@ -52,11 +72,12 @@ func (graph *RuntimeGraph) Reinforce(fromID, toID int64) {
 	}
 	graph.edges[0][toID]++
 	graph.edges[fromID][toID]++
+	graph.diffts++
 }
 
 func (graph *RuntimeGraph) AddCooldown(fromID, toID int64, value float64) {
-	graph.cdMu.Lock()
-	defer graph.cdMu.Unlock()
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
 
 	if graph.cooldowns[fromID] == nil {
 		graph.cooldowns[fromID] = make(map[int64]float64)
@@ -66,24 +87,24 @@ func (graph *RuntimeGraph) AddCooldown(fromID, toID int64, value float64) {
 }
 
 func (graph *RuntimeGraph) ReduceCooldown() {
-	graph.cdMu.Lock()
-	defer graph.cdMu.Unlock()
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
 
 	for _, inner := range graph.cooldowns {
 		for toID := range inner {
 			if inner[toID] > 0 {
 				inner[toID]--
-			}
-			if graph.diffts > 0 {
-				graph.diffts--
+				if graph.diffts > 0 {
+					graph.diffts--
+				}
 			}
 		}
 	}
 }
 
 func (graph *RuntimeGraph) Penalty(fromID, toID int64) {
-	graph.pMu.Lock()
-	defer graph.pMu.Unlock()
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
 
 	if graph.penalties[fromID] == nil {
 		graph.penalties[fromID] = make(map[int64]float64)
@@ -92,10 +113,20 @@ func (graph *RuntimeGraph) Penalty(fromID, toID int64) {
 	graph.diffts++
 }
 
-func (graph *RuntimeGraph) CopyBase(base *basegraph.BaseGraph, buildVersion int64, buildReason string) {
-	graph.edMu.Lock()
-	defer graph.edMu.Unlock()
+func (graph *RuntimeGraph) BuildFromBase(base *basegraph.BaseGraph) {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	graph.copyBase(base, 0, "Runtime initialization")
+}
 
+func (graph *RuntimeGraph) RebuildFromBase(base *basegraph.BaseGraph, buildReason string) {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+	graph.buildVersion++
+	graph.copyBase(base, graph.buildVersion, buildReason)
+}
+
+func (graph *RuntimeGraph) copyBase(base *basegraph.BaseGraph, buildVersion int64, buildReason string) {
 	graph.edges = make(map[int64]map[int64]float64)
 
 	ids := base.GetAllIDs()
@@ -129,13 +160,6 @@ func copyMap[K comparable, V any](src map[K]V) map[K]V {
 }
 
 func (graph *RuntimeGraph) calculateFines(fromID int64) map[int64]float64 {
-	graph.edMu.RLock()
-	graph.cdMu.RLock()
-	graph.pMu.RLock()
-	defer graph.edMu.RUnlock()
-	defer graph.cdMu.RUnlock()
-	defer graph.pMu.RUnlock()
-
 	if graph.edges[fromID] == nil {
 		return map[int64]float64{}
 	}
@@ -187,6 +211,8 @@ func calculateProb(fined map[int64]float64) map[int64]float64 {
 }
 
 func (graph *RuntimeGraph) GetEdges(fromID int64) map[int64]float64 {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
 	fined := graph.calculateFines(fromID)
 	if len(fined) == 0 {
 		return map[int64]float64{}

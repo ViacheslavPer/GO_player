@@ -13,11 +13,11 @@ import (
 type Orchestrator struct {
 	baseGraph           *basegraph.BaseGraph
 	runtimeGraph        *runtime.RuntimeGraph
+	runtimeGraphMutex   sync.RWMutex
+	runtimeBuildVersion int64
 	maxRuntimeGraphAge  time.Duration
 	maxRuntimeGraphDiff float64
 	diffChan            chan struct{}
-	runtimeGraphVersion int64
-	runtimeGraphMutex   sync.RWMutex
 	selector            *selector.Selector
 	playbackChain       *playback.PlaybackChain
 	playbackMutex       sync.Mutex
@@ -34,7 +34,7 @@ func NewOrchestrator() *Orchestrator {
 	bg := basegraph.NewBaseGraph()
 
 	rg := runtime.NewRuntimeGraph()
-	rg.CopyBase(bg, 0, "Orchestrator initialization")
+	rg.BuildFromBase(bg)
 
 	s := selector.NewSelector()
 
@@ -42,9 +42,9 @@ func NewOrchestrator() *Orchestrator {
 		baseGraph:           bg,
 		runtimeGraph:        rg,
 		maxRuntimeGraphAge:  time.Hour,
+		runtimeGraphMutex:   sync.RWMutex{},
 		maxRuntimeGraphDiff: 50,
 		diffChan:            make(chan struct{}),
-		runtimeGraphMutex:   sync.RWMutex{},
 		selector:            s,
 		playbackChain:       &playback.PlaybackChain{},
 		playbackMutex:       sync.Mutex{},
@@ -64,9 +64,8 @@ func (o *Orchestrator) RebuildRuntime(rebuildReason string) {
 			o.baseGraph.Penalty(fromID, toID)
 		}
 	}
-	o.runtimeGraphVersion++
 	o.runtimeGraph = runtime.NewRuntimeGraph()
-	o.runtimeGraph.CopyBase(o.baseGraph, o.runtimeGraphVersion, rebuildReason)
+	o.runtimeGraph.RebuildFromBase(o.baseGraph, rebuildReason)
 }
 
 func (o *Orchestrator) Start() {
