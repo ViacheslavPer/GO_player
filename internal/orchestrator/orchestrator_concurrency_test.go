@@ -61,9 +61,13 @@ func TestOrchestrator_ConcurrentUsage(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < iterations; i++ {
+			lc := o.lifecycle.Load()
+			if lc == nil {
+				return
+			}
 			select {
 			case o.diffChan <- struct{}{}:
-			case <-o.ctx.Done():
+			case <-lc.ctx.Done():
 				return
 			}
 		}

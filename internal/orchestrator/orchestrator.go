@@ -11,10 +11,15 @@ import (
 	"time"
 )
 
+type lifecycle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
 type Orchestrator struct {
 	baseGraph           *basegraph.BaseGraph
 	runtimeGraph        atomic.Pointer[runtime.RuntimeGraph]
-	runtimeBuildVersion int64
+	lifecycle           atomic.Pointer[lifecycle]
 	maxRuntimeGraphAge  time.Duration
 	maxRuntimeGraphDiff float64
 	diffChan            chan struct{}
@@ -23,8 +28,7 @@ type Orchestrator struct {
 	playbackMutex       sync.Mutex
 	cooldownChan        chan struct{}
 	wg                  *sync.WaitGroup
-	ctx                 context.Context
-	cancel              context.CancelFunc
+	rebuildMu           sync.Mutex
 }
 
 func NewOrchestrator() *Orchestrator {
@@ -48,21 +52,23 @@ func NewOrchestrator() *Orchestrator {
 		playbackMutex:       sync.Mutex{},
 		cooldownChan:        make(chan struct{}, 1),
 		wg:                  wg,
-		ctx:                 ctx,
-		cancel:              cancel,
+		rebuildMu:           sync.Mutex{},
 	}
 
 	o.runtimeGraph.Store(rg)
+	o.lifecycle.Store(&lifecycle{ctx: ctx, cancel: cancel})
 
 	return o
 }
 
 func (o *Orchestrator) RebuildRuntime(rebuildReason string) {
+	o.rebuildMu.Lock()
+	defer o.rebuildMu.Unlock()
+
 	current := o.runtimeGraph.Load()
 	if current == nil {
 		return
 	}
-
 	runtimePenalty := current.GetPenalty()
 	for fromID := range runtimePenalty {
 		for toID := range runtimePenalty[fromID] {
@@ -70,13 +76,12 @@ func (o *Orchestrator) RebuildRuntime(rebuildReason string) {
 		}
 	}
 
-	o.Stop()
+	o.stopLocked()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	o.ctx = ctx
-	o.cancel = cancel
-	o.diffChan = make(chan struct{}, 5)
-	o.cooldownChan = make(chan struct{}, 1)
+	o.lifecycle.Store(&lifecycle{ctx: ctx, cancel: cancel})
+	// Keep existing diffChan and cooldownChan so in-flight addChainSignal goroutines
+	// do not block forever on a channel no one receives from.
 
 	newRG := runtime.NewRuntimeGraph()
 	newRG.RebuildFromBase(o.baseGraph, rebuildReason)
@@ -93,15 +98,27 @@ func (o *Orchestrator) Start() {
 }
 
 func (o *Orchestrator) Stop() {
-	o.cancel()
+	o.rebuildMu.Lock()
+	defer o.rebuildMu.Unlock()
+	o.stopLocked()
+}
+
+func (o *Orchestrator) stopLocked() {
+	if h := o.lifecycle.Load(); h != nil {
+		h.cancel()
+	}
 	o.wg.Wait()
 }
 
 func (o *Orchestrator) manageCooldowns() {
 	defer o.wg.Done()
 	for {
+		lc := o.lifecycle.Load()
+		if lc == nil {
+			return
+		}
 		select {
-		case <-o.ctx.Done():
+		case <-lc.ctx.Done():
 			return
 		case <-o.cooldownChan:
 			o.reduceCooldown()
@@ -116,8 +133,12 @@ func (o *Orchestrator) manageRuntimeGraphTS() {
 	defer ticker.Stop()
 
 	for {
+		lc := o.lifecycle.Load()
+		if lc == nil {
+			return
+		}
 		select {
-		case <-o.ctx.Done():
+		case <-lc.ctx.Done():
 			return
 		case <-ticker.C:
 			rg := o.runtimeGraph.Load()
@@ -127,7 +148,7 @@ func (o *Orchestrator) manageRuntimeGraphTS() {
 
 			runtimeGraphAge := time.Since(rg.GetTimestamp())
 			if runtimeGraphAge > o.maxRuntimeGraphAge {
-				o.RebuildRuntime("time to live is up")
+				go o.RebuildRuntime("time to live is up")
 			}
 		}
 	}
@@ -136,8 +157,12 @@ func (o *Orchestrator) manageRuntimeGraphTS() {
 func (o *Orchestrator) manageRuntimeGraphDiffts() {
 	defer o.wg.Done()
 	for {
+		lc := o.lifecycle.Load()
+		if lc == nil {
+			return
+		}
 		select {
-		case <-o.ctx.Done():
+		case <-lc.ctx.Done():
 			return
 		case <-o.diffChan:
 			rg := o.runtimeGraph.Load()
@@ -147,17 +172,19 @@ func (o *Orchestrator) manageRuntimeGraphDiffts() {
 
 			runtimeGraphDiffts := rg.GetDiffts()
 			if runtimeGraphDiffts > o.maxRuntimeGraphDiff {
-				o.RebuildRuntime("diff limit exceeded")
+				go o.RebuildRuntime("diff limit exceeded")
 			}
 		}
 	}
 }
 
 func (o *Orchestrator) addChainSignal(chain chan struct{}) {
-	o.wg.Add(1)
-	defer o.wg.Done()
+	lc := o.lifecycle.Load()
+	if lc == nil {
+		return
+	}
 	select {
-	case <-o.ctx.Done():
+	case <-lc.ctx.Done():
 		return
 	case chain <- struct{}{}:
 		return
