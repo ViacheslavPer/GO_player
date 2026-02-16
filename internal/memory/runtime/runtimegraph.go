@@ -2,14 +2,20 @@ package runtime
 
 import (
 	"GO_player/internal/memory/basegraph"
+	"math"
 	"sync"
 	"time"
 )
 
+type cooldownEntry struct {
+	Value float64
+	Ts    time.Time
+}
 type RuntimeGraph struct {
 	mu           sync.RWMutex
 	edges        map[int64]map[int64]float64
-	cooldowns    map[int64]map[int64]float64
+	cooldowns    map[int64]map[int64]cooldownEntry
+	tau          float64
 	penalties    map[int64]map[int64]float64
 	buildVersion int64
 	buildReason  string
@@ -20,8 +26,9 @@ type RuntimeGraph struct {
 func NewRuntimeGraph() *RuntimeGraph {
 	return &RuntimeGraph{
 		edges:     make(map[int64]map[int64]float64),
-		cooldowns: make(map[int64]map[int64]float64),
+		cooldowns: make(map[int64]map[int64]cooldownEntry),
 		penalties: make(map[int64]map[int64]float64),
+		tau:       180,
 	}
 }
 
@@ -80,26 +87,18 @@ func (graph *RuntimeGraph) AddCooldown(fromID, toID int64, value float64) {
 	defer graph.mu.Unlock()
 
 	if graph.cooldowns[fromID] == nil {
-		graph.cooldowns[fromID] = make(map[int64]float64)
+		graph.cooldowns[fromID] = make(map[int64]cooldownEntry)
 	}
-	graph.cooldowns[fromID][toID] = value
+
+	if value <= 0.0 || value >= 1.0 {
+		value = 1.0
+	}
+
+	graph.cooldowns[fromID][toID] = cooldownEntry{
+		Value: value,
+		Ts:    time.Now(),
+	}
 	graph.diffts++
-}
-
-func (graph *RuntimeGraph) ReduceCooldown() {
-	graph.mu.Lock()
-	defer graph.mu.Unlock()
-
-	for _, inner := range graph.cooldowns {
-		for toID := range inner {
-			if inner[toID] > 0 {
-				inner[toID]--
-				if graph.diffts > 0 {
-					graph.diffts--
-				}
-			}
-		}
-	}
 }
 
 func (graph *RuntimeGraph) Penalty(fromID, toID int64) {
@@ -179,8 +178,13 @@ func (graph *RuntimeGraph) calculateFines(fromID int64) map[int64]float64 {
 
 	if graph.cooldowns[fromID] != nil {
 		for toID := range fined {
-			if cd, ok := graph.cooldowns[fromID][toID]; ok && fined[toID] > cd {
-				fined[toID] -= cd
+			if cd, ok := graph.cooldowns[fromID][toID]; ok {
+				cooldownScore := cd.Value * math.Exp(-time.Since(cd.Ts).Seconds()/graph.tau)
+				if fined[toID] > cooldownScore {
+					fined[toID] -= cooldownScore
+				} else {
+					fined[toID] = 0
+				}
 			}
 		}
 	}

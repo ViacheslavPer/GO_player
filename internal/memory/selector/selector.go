@@ -8,29 +8,52 @@ import (
 )
 
 type Selector struct {
-	giniThreshold float64
-	topK          int64
+	giniHigh float64
+	giniLow  float64
+	topK     int64
 }
 
 func NewSelector() *Selector {
 	return &Selector{
-		giniThreshold: 0.5,
-		topK:          10,
+		giniHigh: 0.6,
+		giniLow:  0.35,
+		topK:     10,
 	}
 }
 
-func NewSelectorWithParameters(giniThreshold float64, topK int64) *Selector {
+func NewSelectorWithParameters(giniHigh, giniLow float64, topK int64) *Selector {
 	if topK <= 0 {
 		topK = 10
 	}
-	if giniThreshold <= 0.0 || giniThreshold >= 1.0 {
-		giniThreshold = 0.5
+	if giniLow <= 0.0 || giniLow >= 1.0 {
+		giniLow = 0.35
+	}
+	if giniHigh <= 0.0 || giniHigh >= 1.0 {
+		giniHigh = 0.6
+	}
+	if giniHigh <= giniLow {
+		giniHigh = 0.6
+		giniLow = 0.35
 	}
 
 	return &Selector{
-		giniThreshold: giniThreshold,
-		topK:          topK,
+		giniHigh: giniHigh,
+		giniLow:  giniLow,
+		topK:     topK,
 	}
+}
+
+func computeTopK(N int, ratio float64) int {
+	K_min := max(3, int(math.Ceil(float64(N)*0.05)))
+	K_max := max(K_min+1, int(math.Ceil(float64(N)*0.3)))
+	K := int(math.Round(float64(K_min) + ratio*float64(K_max-K_min)))
+	if K < K_min {
+		K = K_min
+	}
+	if K > K_max {
+		K = K_max
+	}
+	return K
 }
 
 func computeGini(probs map[int64]float64) float64 {
@@ -50,11 +73,31 @@ func (s *Selector) Next(fromID int64, runtimeGraph *runtime.RuntimeGraph) (toID 
 		return 0, false
 	}
 	gini := computeGini(probs)
-	if gini > s.giniThreshold {
-		return selectTopK(probs, int(s.topK))
+
+	ratio := (gini - s.giniLow) / (s.giniHigh - s.giniLow)
+	ratio = math.Max(0.0, math.Min(1.0, ratio))
+
+	if gini <= s.giniLow {
+		return selectWeighted(probs)
 	}
 
-	return selectWeighted(probs)
+	alpha := 1.1 + (1.0-ratio)*0.7
+	hybridProbs := make(map[int64]float64, len(probs))
+	sum := 0.0
+	for id, p := range probs {
+		hybridProbs[id] = math.Pow(p, alpha)
+		sum += hybridProbs[id]
+	}
+	for id := range hybridProbs {
+		hybridProbs[id] /= sum
+	}
+
+	if gini >= s.giniHigh {
+		k := computeTopK(len(probs), ratio)
+		return selectTopK(hybridProbs, k)
+	}
+
+	return selectWeighted(hybridProbs)
 }
 
 func selectTopK(probs map[int64]float64, k int) (int64, bool) {

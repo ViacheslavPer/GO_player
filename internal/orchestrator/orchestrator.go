@@ -26,7 +26,6 @@ type Orchestrator struct {
 	selector            *selector.Selector
 	playbackChain       *playback.PlaybackChain
 	playbackMutex       sync.Mutex
-	cooldownChan        chan struct{}
 	wg                  *sync.WaitGroup
 	rebuildMu           sync.Mutex
 }
@@ -50,7 +49,6 @@ func NewOrchestrator() *Orchestrator {
 		selector:            s,
 		playbackChain:       &playback.PlaybackChain{},
 		playbackMutex:       sync.Mutex{},
-		cooldownChan:        make(chan struct{}, 1),
 		wg:                  wg,
 		rebuildMu:           sync.Mutex{},
 	}
@@ -80,8 +78,6 @@ func (o *Orchestrator) RebuildRuntime(rebuildReason string) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	o.lifecycle.Store(&lifecycle{ctx: ctx, cancel: cancel})
-	// Keep existing diffChan and cooldownChan so in-flight addChainSignal goroutines
-	// do not block forever on a channel no one receives from.
 
 	newRG := runtime.NewRuntimeGraph()
 	newRG.RebuildFromBase(o.baseGraph, rebuildReason)
@@ -91,8 +87,7 @@ func (o *Orchestrator) RebuildRuntime(rebuildReason string) {
 }
 
 func (o *Orchestrator) Start() {
-	o.wg.Add(3)
-	go o.manageCooldowns()
+	o.wg.Add(2)
 	go o.manageRuntimeGraphTS()
 	go o.manageRuntimeGraphDiffts()
 }
@@ -108,22 +103,6 @@ func (o *Orchestrator) stopLocked() {
 		h.cancel()
 	}
 	o.wg.Wait()
-}
-
-func (o *Orchestrator) manageCooldowns() {
-	defer o.wg.Done()
-	for {
-		lc := o.lifecycle.Load()
-		if lc == nil {
-			return
-		}
-		select {
-		case <-lc.ctx.Done():
-			return
-		case <-o.cooldownChan:
-			o.reduceCooldown()
-		}
-	}
 }
 
 func (o *Orchestrator) manageRuntimeGraphTS() {
@@ -192,8 +171,6 @@ func (o *Orchestrator) addChainSignal(chain chan struct{}) {
 }
 
 func (o *Orchestrator) Learn(fromID, toID int64) {
-	go o.addChainSignal(o.cooldownChan)
-
 	o.playbackMutex.Lock()
 	learningFrozen := o.playbackChain.LearningFrozen
 	o.playbackMutex.Unlock()
@@ -222,13 +199,6 @@ func (o *Orchestrator) addCooldown(fromID, toID int64, value float64) {
 	rg := o.runtimeGraph.Load()
 	if rg != nil {
 		rg.AddCooldown(fromID, toID, value)
-	}
-}
-
-func (o *Orchestrator) reduceCooldown() {
-	rg := o.runtimeGraph.Load()
-	if rg != nil {
-		rg.ReduceCooldown()
 	}
 }
 
