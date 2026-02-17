@@ -8,29 +8,52 @@ import (
 )
 
 type Selector struct {
-	giniThreshold float64
-	topK          int64
+	giniHigh float64
+	giniLow  float64
+	topK     int64
 }
 
 func NewSelector() *Selector {
 	return &Selector{
-		giniThreshold: 0.5,
-		topK:          10,
+		giniHigh: 0.6,
+		giniLow:  0.35,
+		topK:     10,
 	}
 }
 
-func NewSelectorWithParameters(giniThreshold float64, topK int64) *Selector {
+func NewSelectorWithParameters(giniHigh, giniLow float64, topK int64) *Selector {
 	if topK <= 0 {
 		topK = 10
 	}
-	if giniThreshold <= 0.0 || giniThreshold >= 1.0 {
-		giniThreshold = 0.5
+	if giniLow <= 0.0 || giniLow >= 1.0 {
+		giniLow = 0.35
+	}
+	if giniHigh <= 0.0 || giniHigh >= 1.0 {
+		giniHigh = 0.6
+	}
+	if giniHigh <= giniLow {
+		giniHigh = 0.6
+		giniLow = 0.35
 	}
 
 	return &Selector{
-		giniThreshold: giniThreshold,
-		topK:          topK,
+		giniHigh: giniHigh,
+		giniLow:  giniLow,
+		topK:     topK,
 	}
+}
+
+func computeTopK(N int, ratio float64) int {
+	KMin := max(3, int(math.Ceil(float64(N)*0.05)))
+	KMax := max(KMin+1, int(math.Ceil(float64(N)*0.3)))
+	K := int(math.Round(float64(KMin) + ratio*float64(KMax-KMin)))
+	if K < KMin {
+		K = KMin
+	}
+	if K > KMax {
+		K = KMax
+	}
+	return K
 }
 
 func computeGini(probs map[int64]float64) float64 {
@@ -50,11 +73,51 @@ func (s *Selector) Next(fromID int64, runtimeGraph *runtime.RuntimeGraph) (toID 
 		return 0, false
 	}
 	gini := computeGini(probs)
-	if gini > s.giniThreshold {
-		return selectTopK(probs, int(s.topK))
+
+	ratio := (gini - s.giniLow) / (s.giniHigh - s.giniLow)
+	ratio = math.Max(0.0, math.Min(1.0, ratio))
+
+	if gini > s.giniHigh*1.15 {
+		k := computeTopK(len(probs), ratio)
+		return selectTopKSuperSafe(probs, k)
+	}
+	if gini <= s.giniLow {
+		return selectWeighted(probs)
 	}
 
-	return selectWeighted(probs)
+	alpha := 1.1 + (1.0-ratio)*0.7
+	hybridProbs := make(map[int64]float64, len(probs))
+	sum := 0.0
+	for id, p := range probs {
+		hybridProbs[id] = math.Pow(p, alpha)
+		sum += hybridProbs[id]
+	}
+	for id := range hybridProbs {
+		hybridProbs[id] /= sum
+	}
+
+	if gini >= s.giniHigh {
+		k := computeTopK(len(probs), ratio)
+		return selectTopK(hybridProbs, k)
+	}
+
+	return selectWeighted(hybridProbs)
+}
+
+func selectTopKSuperSafe(probs map[int64]float64, k int) (int64, bool) {
+	type probItem struct{ id int64 }
+	items := make([]probItem, 0, len(probs))
+	for id := range probs {
+		items = append(items, probItem{id})
+	}
+
+	sort.Slice(items, func(i, j int) bool { return probs[items[i].id] > probs[items[j].id] })
+
+	k = int(math.Min(float64(k), float64(len(items))))
+	topK := items[:k]
+
+	idx := rand.Intn(len(topK))
+	return topK[idx].id, true
 }
 
 func selectTopK(probs map[int64]float64, k int) (int64, bool) {
