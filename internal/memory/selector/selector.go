@@ -44,14 +44,14 @@ func NewSelectorWithParameters(giniHigh, giniLow float64, topK int64) *Selector 
 }
 
 func computeTopK(N int, ratio float64) int {
-	K_min := max(3, int(math.Ceil(float64(N)*0.05)))
-	K_max := max(K_min+1, int(math.Ceil(float64(N)*0.3)))
-	K := int(math.Round(float64(K_min) + ratio*float64(K_max-K_min)))
-	if K < K_min {
-		K = K_min
+	KMin := max(3, int(math.Ceil(float64(N)*0.05)))
+	KMax := max(KMin+1, int(math.Ceil(float64(N)*0.3)))
+	K := int(math.Round(float64(KMin) + ratio*float64(KMax-KMin)))
+	if K < KMin {
+		K = KMin
 	}
-	if K > K_max {
-		K = K_max
+	if K > KMax {
+		K = KMax
 	}
 	return K
 }
@@ -77,6 +77,10 @@ func (s *Selector) Next(fromID int64, runtimeGraph *runtime.RuntimeGraph) (toID 
 	ratio := (gini - s.giniLow) / (s.giniHigh - s.giniLow)
 	ratio = math.Max(0.0, math.Min(1.0, ratio))
 
+	if gini > s.giniHigh*1.15 {
+		k := computeTopK(len(probs), ratio)
+		return selectTopKSuperSafe(probs, k)
+	}
 	if gini <= s.giniLow {
 		return selectWeighted(probs)
 	}
@@ -98,6 +102,22 @@ func (s *Selector) Next(fromID int64, runtimeGraph *runtime.RuntimeGraph) (toID 
 	}
 
 	return selectWeighted(hybridProbs)
+}
+
+func selectTopKSuperSafe(probs map[int64]float64, k int) (int64, bool) {
+	type probItem struct{ id int64 }
+	items := make([]probItem, 0, len(probs))
+	for id := range probs {
+		items = append(items, probItem{id})
+	}
+
+	sort.Slice(items, func(i, j int) bool { return probs[items[i].id] > probs[items[j].id] })
+
+	k = int(math.Min(float64(k), float64(len(items))))
+	topK := items[:k]
+
+	idx := rand.Intn(len(topK))
+	return topK[idx].id, true
 }
 
 func selectTopK(probs map[int64]float64, k int) (int64, bool) {

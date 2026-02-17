@@ -170,44 +170,27 @@ func (o *Orchestrator) addChainSignal(chain chan struct{}) {
 	}
 }
 
-func (o *Orchestrator) Learn(fromID, toID int64) {
-	o.playbackMutex.Lock()
-	learningFrozen := o.playbackChain.LearningFrozen
-	o.playbackMutex.Unlock()
-
-	if learningFrozen {
+func (o *Orchestrator) ProcessFeedbak(fromID, toID int64, listened, duration float64) {
+	rg := o.runtimeGraph.Load()
+	if rg == nil {
 		return
 	}
 
-	o.baseGraph.Reinforce(fromID, toID)
-
-	rg := o.runtimeGraph.Load()
-	if rg != nil {
-		rg.Reinforce(fromID, toID)
-		go o.addChainSignal(o.diffChan)
+	progress := listened / duration
+	if progress >= 0.33 {
+		rg.Reinforce(fromID, toID, 1)
+	} else if progress < 0.1 {
+		rg.Penalty(fromID, toID, 2)
+		rg.AddCooldown(fromID, toID, 0.2)
+	} else {
+		rg.Penalty(fromID, toID, 1)
+		rg.AddCooldown(fromID, toID, 0.1)
 	}
+	o.addChainSignal(o.diffChan)
 }
 
 func (o *Orchestrator) baseGraphPenalty(fromID, toID int64) {
 	o.baseGraph.Penalty(fromID, toID)
-}
-
-func (o *Orchestrator) addCooldown(fromID, toID int64, value float64) {
-	if value <= 0.0 {
-		value = 1.0
-	}
-	rg := o.runtimeGraph.Load()
-	if rg != nil {
-		rg.AddCooldown(fromID, toID, value)
-	}
-}
-
-func (o *Orchestrator) runtimeGraphPenalty(fromID, toID int64) {
-	rg := o.runtimeGraph.Load()
-	if rg != nil {
-		rg.Penalty(fromID, toID)
-		go o.addChainSignal(o.diffChan)
-	}
 }
 
 func (o *Orchestrator) PlayNext() (int64, bool) {

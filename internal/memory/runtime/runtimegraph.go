@@ -67,7 +67,7 @@ func (graph *RuntimeGraph) GetPenalty() map[int64]map[int64]float64 {
 	return copyOuter
 }
 
-func (graph *RuntimeGraph) Reinforce(fromID, toID int64) {
+func (graph *RuntimeGraph) Reinforce(fromID, toID int64, value float64) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
 
@@ -77,8 +77,8 @@ func (graph *RuntimeGraph) Reinforce(fromID, toID int64) {
 	if graph.edges[0] == nil {
 		graph.edges[0] = make(map[int64]float64)
 	}
-	graph.edges[0][toID]++
-	graph.edges[fromID][toID]++
+	graph.edges[0][toID] += value
+	graph.edges[fromID][toID] += value
 	graph.diffts++
 }
 
@@ -101,14 +101,14 @@ func (graph *RuntimeGraph) AddCooldown(fromID, toID int64, value float64) {
 	graph.diffts++
 }
 
-func (graph *RuntimeGraph) Penalty(fromID, toID int64) {
+func (graph *RuntimeGraph) Penalty(fromID, toID int64, value float64) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
 
 	if graph.penalties[fromID] == nil {
 		graph.penalties[fromID] = make(map[int64]float64)
 	}
-	graph.penalties[fromID][toID]++
+	graph.penalties[fromID][toID] += value
 	graph.diffts++
 }
 
