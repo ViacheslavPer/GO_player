@@ -47,7 +47,7 @@ func (graph *BaseGraph) Penalty(fromID, toID int64) {
 	}
 }
 
-func (graph *BaseGraph) GetEdges(id int64) map[int64]float64 {
+func (graph *BaseGraph) GetEdgesForID(id int64) map[int64]float64 {
 	graph.mu.RLock()
 	defer graph.mu.RUnlock()
 
@@ -55,13 +55,64 @@ func (graph *BaseGraph) GetEdges(id int64) map[int64]float64 {
 		return make(map[int64]float64)
 	}
 
-	// Return a copy to avoid exposing internal maps to concurrent mutation.
 	src := graph.edges[id]
 	copyMap := make(map[int64]float64, len(src))
 	for k, v := range src {
 		copyMap[k] = v
 	}
 	return copyMap
+}
+
+func (graph *BaseGraph) SetEdges(edges map[int64]map[int64]float64) error {
+	graph.mu.Lock()
+	defer graph.mu.Unlock()
+
+	if edges == nil {
+		graph.edges = make(map[int64]map[int64]float64)
+		return nil
+	}
+
+	newEdges := make(map[int64]map[int64]float64, len(edges))
+
+	for id, neighbors := range edges {
+		if neighbors == nil {
+			newEdges[id] = make(map[int64]float64)
+			continue
+		}
+
+		neighborCopy := make(map[int64]float64, len(neighbors))
+		for k, v := range neighbors {
+			neighborCopy[k] = v
+		}
+
+		newEdges[id] = neighborCopy
+	}
+
+	graph.edges = newEdges
+	return nil
+}
+
+func (graph *BaseGraph) GetEdges() map[int64]map[int64]float64 {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+
+	copyEdges := make(map[int64]map[int64]float64, len(graph.edges))
+
+	for id, neighbors := range graph.edges {
+		if neighbors == nil {
+			copyEdges[id] = make(map[int64]float64)
+			continue
+		}
+
+		neighborCopy := make(map[int64]float64, len(neighbors))
+		for k, v := range neighbors {
+			neighborCopy[k] = v
+		}
+
+		copyEdges[id] = neighborCopy
+	}
+
+	return copyEdges
 }
 
 func (graph *BaseGraph) GetAllIDs() []int64 {

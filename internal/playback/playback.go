@@ -1,10 +1,10 @@
 package playback
 
 type PlaybackChain struct {
-	BackStack      []int64
-	Current        int64
-	ForwardStack   []int64
-	LearningFrozen bool
+	BackStack      []int64 `json:"back_stack"`
+	Current        int64   `json:"current"`
+	ForwardStack   []int64 `json:"forward_stack"`
+	LearningFrozen bool    `json:"learning_frozen"`
 }
 
 func (pc *PlaybackChain) Back() (int64, bool) {

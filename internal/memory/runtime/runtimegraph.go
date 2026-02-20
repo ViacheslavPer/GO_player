@@ -25,6 +25,7 @@ type RuntimeGraph struct {
 
 func NewRuntimeGraph() *RuntimeGraph {
 	return &RuntimeGraph{
+		mu:        sync.RWMutex{},
 		edges:     make(map[int64]map[int64]float64),
 		cooldowns: make(map[int64]map[int64]cooldownEntry),
 		penalties: make(map[int64]map[int64]float64),
@@ -62,7 +63,7 @@ func (graph *RuntimeGraph) GetPenalty() map[int64]map[int64]float64 {
 
 	copyOuter := make(map[int64]map[int64]float64, len(graph.penalties))
 	for fromID, inner := range graph.penalties {
-		copyOuter[fromID] = copyMap(inner) // ← вот тут ок
+		copyOuter[fromID] = copyMap(inner)
 	}
 	return copyOuter
 }
@@ -138,7 +139,7 @@ func (graph *RuntimeGraph) copyBase(base *basegraph.BaseGraph, buildVersion int6
 
 	ids := base.GetAllIDs()
 	for _, fid := range ids {
-		baseStat := base.GetEdges(fid)
+		baseStat := base.GetEdgesForID(fid)
 		if baseStat == nil || len(baseStat) == 0 {
 			continue
 		}
