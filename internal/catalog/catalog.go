@@ -107,7 +107,7 @@ func (c *catalogImpl) SaveBaseGraph(albumID int64, graph *basegraph.BaseGraph) e
 		return err
 	}
 
-	return c.db.SetBaseGraph(albumID, &buf)
+	return c.db.SetBaseGraph(albumID, buf.Bytes())
 }
 
 func (c *catalogImpl) SavePlaybackSession(chain *playback.PlaybackChain) error {

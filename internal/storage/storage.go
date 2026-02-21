@@ -1,7 +1,6 @@
 package storage
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 
@@ -151,11 +150,11 @@ func (db *DB) ListAlbums() ([][]byte, error) {
 	return res, nil
 }
 
-func (db *DB) SetBaseGraph(albumID int64, buf *bytes.Buffer) error {
+func (db *DB) SetBaseGraph(albumID int64, data []byte) error {
 	key := fmt.Sprintf("graph/%d", albumID)
 
 	return db.runTxnReadWrite(func(txn *badger.Txn) error {
-		return txn.Set([]byte(key), buf.Bytes())
+		return txn.Set([]byte(key), data)
 	})
 }
 
