@@ -201,15 +201,11 @@ func (db *DB) SetBaseGraph(albumID int64, graph *basegraph.BaseGraph) error {
 	})
 }
 
-func (db *DB) GetBaseGraph(albumID int64, graph *basegraph.BaseGraph) error {
-	if graph == nil {
-		return fmt.Errorf("graph is nil")
-	}
-
+func (db *DB) GetBaseGraph(albumID int64) (map[int64]map[int64]float64, error) {
 	graphKey := fmt.Sprintf("graph/%d", albumID)
 	edges := map[int64]map[int64]float64{}
 
-	return db.runTxnReadOnly(func(txn *badger.Txn) error {
+	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(graphKey))
 		if errors.Is(err, badger.ErrKeyNotFound) {
 			return nil
@@ -228,8 +224,14 @@ func (db *DB) GetBaseGraph(albumID int64, graph *basegraph.BaseGraph) error {
 			return err
 		}
 
-		return graph.SetEdges(edges)
+		return nil
 	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return edges, nil
 }
 
 func (db *DB) SetPlaybackSession(playback playback.PlaybackChain) error {

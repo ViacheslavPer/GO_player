@@ -30,21 +30,14 @@ type Orchestrator struct {
 	rebuildMu           sync.Mutex
 }
 
-func NewOrchestrator() *Orchestrator {
+func NewOrchestrator(bg *basegraph.BaseGraph, rg *runtime.RuntimeGraph, s *selector.Selector) *Orchestrator {
 	ctx, cancel := context.WithCancel(context.Background())
 	wg := &sync.WaitGroup{}
-
-	bg := basegraph.NewBaseGraph()
-
-	s := selector.NewSelector()
-
-	rg := runtime.NewRuntimeGraph()
-	rg.BuildFromBase(bg)
 
 	o := &Orchestrator{
 		baseGraph:           bg,
 		maxRuntimeGraphAge:  time.Hour,
-		maxRuntimeGraphDiff: 50,
+		maxRuntimeGraphDiff: 50.0,
 		diffChan:            make(chan struct{}, 5),
 		selector:            s,
 		playbackChain:       &playback.PlaybackChain{},

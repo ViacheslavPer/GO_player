@@ -2,9 +2,6 @@ package basegraph
 
 import "sync"
 
-// BaseGraph stores long-term transition memory.
-// It is a pure data structure with integer weights.
-// No probabilities, no runtime logic, no UX logic.
 type BaseGraph struct {
 	mu    sync.RWMutex
 	edges map[int64]map[int64]float64
