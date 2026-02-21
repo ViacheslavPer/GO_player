@@ -1,12 +1,7 @@
 package storage
 
 import (
-	"GO_player/internal/memory/basegraph"
-	"GO_player/internal/models"
-	"GO_player/internal/playback"
 	"bytes"
-	"encoding/gob"
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -31,22 +26,17 @@ func (db *DB) Close() error {
 	return db.badger.Close()
 }
 
-func (db *DB) SetSong(song *models.Song) error {
-	data, err := json.Marshal(song)
-	if err != nil {
-		return err
-	}
-	key := fmt.Sprintf("song/%d", song.ID)
-
+func (db *DB) SetSong(songID int64, data []byte) error {
+	key := fmt.Sprintf("song/%d", songID)
 	return db.runTxnReadWrite(func(txn *badger.Txn) error {
 		return txn.Set([]byte(key), data)
 	})
 }
 
-func (db *DB) GetSong(id int64) (*models.Song, error) {
+func (db *DB) GetSong(id int64) ([]byte, error) {
 	key := fmt.Sprintf("song/%d", id)
 
-	var song *models.Song
+	var res []byte
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
@@ -59,19 +49,19 @@ func (db *DB) GetSong(id int64) (*models.Song, error) {
 			return err
 		}
 
-		song = &models.Song{}
-		return json.Unmarshal(val, song)
+		res = append(res, val...)
+		return nil
 	})
 
 	if err != nil {
 		return nil, err
 	}
 
-	return song, nil
+	return res, nil
 }
 
-func (db *DB) ListSongs() ([]*models.Song, error) {
-	var songs []*models.Song
+func (db *DB) ListSongs() ([][]byte, error) {
+	var res [][]byte
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -87,13 +77,7 @@ func (db *DB) ListSongs() ([]*models.Song, error) {
 			if err != nil {
 				return err
 			}
-
-			song := &models.Song{}
-			if err := json.Unmarshal(val, song); err != nil {
-				return err
-			}
-
-			songs = append(songs, song)
+			res = append(res, val)
 		}
 		return nil
 	})
@@ -102,32 +86,23 @@ func (db *DB) ListSongs() ([]*models.Song, error) {
 		return nil, err
 	}
 
-	return songs, nil
+	return res, nil
 }
 
-func (db *DB) SetAlbum(album *models.Album) error {
-	albumData, err := json.Marshal(album)
-	if err != nil {
-		return err
-	}
-
-	albumKey := fmt.Sprintf("album/%d", album.ID)
-
+func (db *DB) SetAlbum(albumID int64, data []byte) error {
+	key := fmt.Sprintf("album/%d", albumID)
 	return db.runTxnReadWrite(func(txn *badger.Txn) error {
-		if err := txn.Set([]byte(albumKey), albumData); err != nil {
-			return err
-		}
-		return nil
+		return txn.Set([]byte(key), data)
 	})
 }
 
-func (db *DB) GetAlbum(id int64) (*models.Album, error) {
-	albumKey := fmt.Sprintf("album/%d", id)
+func (db *DB) GetAlbum(id int64) ([]byte, error) {
+	key := fmt.Sprintf("album/%d", id)
 
-	album := models.NewAlbum()
+	var res []byte
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte(albumKey))
+		item, err := txn.Get([]byte(key))
 		if err != nil {
 			return err
 		}
@@ -135,22 +110,19 @@ func (db *DB) GetAlbum(id int64) (*models.Album, error) {
 		if err != nil {
 			return err
 		}
-		err = json.Unmarshal(val, album)
-		if err != nil {
-			return err
-		}
 
+		res = append(res, val...)
 		return nil
 	})
 
 	if err != nil {
 		return nil, err
 	}
-	return album, nil
+	return res, nil
 }
 
-func (db *DB) ListAlbums() ([]*models.Album, error) {
-	var albums []*models.Album
+func (db *DB) ListAlbums() ([][]byte, error) {
+	var res [][]byte
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		opts := badger.DefaultIteratorOptions
@@ -167,12 +139,7 @@ func (db *DB) ListAlbums() ([]*models.Album, error) {
 				return err
 			}
 
-			album := models.NewAlbum()
-			if err := json.Unmarshal(val, album); err != nil {
-				return err
-			}
-
-			albums = append(albums, album)
+			res = append(res, val)
 		}
 		return nil
 	})
@@ -181,76 +148,21 @@ func (db *DB) ListAlbums() ([]*models.Album, error) {
 		return nil, err
 	}
 
-	return albums, nil
+	return res, nil
 }
 
-func (db *DB) SetBaseGraph(albumID int64, graph *basegraph.BaseGraph) error {
-	var buf bytes.Buffer
-	encoder := gob.NewEncoder(&buf)
-	if err := encoder.Encode(graph.GetEdges()); err != nil {
-		return err
-	}
-
-	graphKey := fmt.Sprintf("graph/%d", albumID)
+func (db *DB) SetBaseGraph(albumID int64, buf *bytes.Buffer) error {
+	key := fmt.Sprintf("graph/%d", albumID)
 
 	return db.runTxnReadWrite(func(txn *badger.Txn) error {
-		if err := txn.Set([]byte(graphKey), buf.Bytes()); err != nil {
-			return err
-		}
-		return nil
+		return txn.Set([]byte(key), buf.Bytes())
 	})
 }
 
-func (db *DB) GetBaseGraph(albumID int64) (map[int64]map[int64]float64, error) {
-	graphKey := fmt.Sprintf("graph/%d", albumID)
-	edges := map[int64]map[int64]float64{}
+func (db *DB) GetBaseGraph(albumID int64) ([]byte, error) {
+	key := fmt.Sprintf("graph/%d", albumID)
 
-	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
-		item, err := txn.Get([]byte(graphKey))
-		if errors.Is(err, badger.ErrKeyNotFound) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-
-		val, err := item.ValueCopy(nil)
-		if err != nil {
-			return err
-		}
-
-		decoder := gob.NewDecoder(bytes.NewReader(val))
-		if err := decoder.Decode(&edges); err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
-	return edges, nil
-}
-
-func (db *DB) SetPlaybackSession(playback playback.PlaybackChain) error {
-	data, err := json.Marshal(playback)
-	if err != nil {
-		return err
-	}
-
-	key := "session/playback"
-
-	return db.runTxnReadWrite(func(txn *badger.Txn) error {
-		return txn.Set([]byte(key), data)
-	})
-}
-
-func (db *DB) GetPlaybackSession() (playback.PlaybackChain, error) {
-	key := "session/playback"
-
-	var pb playback.PlaybackChain
+	var res []byte
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
@@ -266,14 +178,53 @@ func (db *DB) GetPlaybackSession() (playback.PlaybackChain, error) {
 			return err
 		}
 
-		return json.Unmarshal(val, &pb)
+		res = append(res, val...)
+		return nil
 	})
 
 	if err != nil {
-		return playback.PlaybackChain{}, err
+		return nil, err
 	}
 
-	return pb, nil
+	return res, nil
+}
+
+func (db *DB) SetPlaybackSession(data []byte) error {
+	key := "session/playback"
+
+	return db.runTxnReadWrite(func(txn *badger.Txn) error {
+		return txn.Set([]byte(key), data)
+	})
+}
+
+func (db *DB) GetPlaybackSession() ([]byte, error) {
+	key := "session/playback"
+
+	var res []byte
+
+	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
+		item, err := txn.Get([]byte(key))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		val, err := item.ValueCopy(nil)
+		if err != nil {
+			return err
+		}
+
+		res = append(res, val...)
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
+
+	return res, nil
 }
 
 func (db *DB) runTxnReadOnly(fn func(txn *badger.Txn) error) error {

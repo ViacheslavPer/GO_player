@@ -1,6 +1,3 @@
-// Package catalog — прослойка между storage (DB) и оркестратором/App.
-// Даёт единый контракт для загрузки и сохранения состояния воспроизведения и каталога,
-// не привязывая вызывающего к конкретной реализации хранилища.
 package catalog
 
 import (
@@ -8,56 +5,176 @@ import (
 	"GO_player/internal/models"
 	"GO_player/internal/playback"
 	"GO_player/internal/storage"
+	"bytes"
+	"encoding/gob"
+	"encoding/json"
 )
 
-// Catalog — интерфейс прослойки. Используется App для загрузки/сохранения состояния
-// и получения списков для GUI. Реализация внутри ходит в storage.DB.
 type Catalog interface {
 	LoadBaseGraphEdges(albumID int64) (map[int64]map[int64]float64, error)
-	LoadPlaybackSession() (playback.PlaybackChain, error)
+	LoadPlaybackSession() (*playback.PlaybackChain, error)
+	LoadSong(songID int64) (*models.Song, error)
+	LoadAlbum(albumID int64) (*models.Album, error)
 	SaveBaseGraph(albumID int64, graph *basegraph.BaseGraph) error
-	SavePlaybackSession(chain playback.PlaybackChain) error
+	SavePlaybackSession(chain *playback.PlaybackChain) error
+	SaveSong(songID int64, song *models.Song) error
+	SaveAlbum(albumID int64, album *models.Album) error
 	ListAlbums() ([]*models.Album, error)
 	ListSongs() ([]*models.Song, error)
 }
 
-// catalogImpl — реализация Catalog поверх storage.DB. Логика — делегирование в db + комментарии.
 type catalogImpl struct {
 	db *storage.DB
 }
 
-// NewCatalog создаёт реализацию прослойки для переданного DB.
 func NewCatalog(db *storage.DB) Catalog {
 	return &catalogImpl{db: db}
 }
 
-// LoadBaseGraphEdges — рёбра графа для альбома из БД. App строит из них BaseGraph при старте.
 func (c *catalogImpl) LoadBaseGraphEdges(albumID int64) (map[int64]map[int64]float64, error) {
-	return c.db.GetBaseGraph(albumID)
+	val, err := c.db.GetBaseGraph(albumID)
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return map[int64]map[int64]float64{}, nil
+	}
+
+	var edges map[int64]map[int64]float64
+	decoder := gob.NewDecoder(bytes.NewReader(val))
+	if err := decoder.Decode(&edges); err != nil {
+		return nil, err
+	}
+
+	return edges, nil
 }
 
-// LoadPlaybackSession — последняя сохранённая цепочка воспроизведения. Если нет — пустая цепочка.
-func (c *catalogImpl) LoadPlaybackSession() (playback.PlaybackChain, error) {
-	// псевдокод: chain, err := c.db.GetPlaybackSession(); если ErrKeyNotFound — вернуть пустую цепочку и nil
-	return c.db.GetPlaybackSession()
+func (c *catalogImpl) LoadPlaybackSession() (*playback.PlaybackChain, error) {
+	val, err := c.db.GetPlaybackSession()
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return &playback.PlaybackChain{}, nil
+	}
+
+	var pb playback.PlaybackChain
+	err = json.Unmarshal(val, &pb)
+	if err != nil {
+		return nil, err
+	}
+	return &pb, nil
 }
 
-// SaveBaseGraph — сохранить граф альбома (после ребилда в оркестраторе).
+func (c *catalogImpl) LoadSong(songID int64) (*models.Song, error) {
+	val, err := c.db.GetSong(songID)
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return &models.Song{}, nil
+	}
+
+	var song models.Song
+	err = json.Unmarshal(val, &song)
+	if err != nil {
+		return nil, err
+	}
+	return &song, nil
+}
+
+func (c *catalogImpl) LoadAlbum(albumID int64) (*models.Album, error) {
+	val, err := c.db.GetAlbum(albumID)
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return &models.Album{}, nil
+	}
+
+	album := models.NewAlbum()
+	err = json.Unmarshal(val, album)
+	if err != nil {
+		return nil, err
+	}
+	return album, nil
+}
+
 func (c *catalogImpl) SaveBaseGraph(albumID int64, graph *basegraph.BaseGraph) error {
-	return c.db.SetBaseGraph(albumID, graph)
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+	if err := encoder.Encode(graph.GetEdges()); err != nil {
+		return err
+	}
+
+	return c.db.SetBaseGraph(albumID, &buf)
 }
 
-// SavePlaybackSession — сохранить цепочку воспроизведения (после PlayNext/PlayBack в App).
-func (c *catalogImpl) SavePlaybackSession(chain playback.PlaybackChain) error {
-	return c.db.SetPlaybackSession(chain)
+func (c *catalogImpl) SavePlaybackSession(chain *playback.PlaybackChain) error {
+	data, err := json.Marshal(chain)
+	if err != nil {
+		return err
+	}
+
+	return c.db.SetPlaybackSession(data)
 }
 
-// ListAlbums — список альбомов для GUI.
+func (c *catalogImpl) SaveSong(songID int64, song *models.Song) error {
+	data, err := json.Marshal(song)
+	if err != nil {
+		return err
+	}
+
+	return c.db.SetSong(songID, data)
+}
+
+func (c *catalogImpl) SaveAlbum(albumID int64, album *models.Album) error {
+	data, err := json.Marshal(album)
+	if err != nil {
+		return err
+	}
+
+	return c.db.SetAlbum(albumID, data)
+}
+
 func (c *catalogImpl) ListAlbums() ([]*models.Album, error) {
-	return c.db.ListAlbums()
+	val, err := c.db.ListAlbums()
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return []*models.Album{}, nil
+	}
+
+	var albums []*models.Album
+	for _, v := range val {
+		album := models.NewAlbum()
+		if err := json.Unmarshal(v, album); err != nil {
+			return nil, err
+		}
+		albums = append(albums, album)
+	}
+
+	return albums, nil
 }
 
-// ListSongs — список треков для GUI.
 func (c *catalogImpl) ListSongs() ([]*models.Song, error) {
-	return c.db.ListSongs()
+	val, err := c.db.ListSongs()
+	if err != nil {
+		return nil, err
+	}
+	if len(val) == 0 {
+		return []*models.Song{}, nil
+	}
+
+	var songs []*models.Song
+	for _, v := range val {
+		song := &models.Song{}
+		if err := json.Unmarshal(v, song); err != nil {
+			return nil, err
+		}
+		songs = append(songs, song)
+	}
+
+	return songs, nil
 }
