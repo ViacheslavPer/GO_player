@@ -1,28 +1,131 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/dgraph-io/badger/v3"
 )
 
+const defaultBackupInterval = 20 * time.Minute
+
 type DB struct {
 	badger *badger.DB
+	backup *backupRunner
 }
 
-func NewDB(path string) (*DB, error) {
+type backupRunner struct {
+	badger     *badger.DB
+	backupPath string
+	interval   time.Duration
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	mu         sync.Mutex
+	state      runState
+}
+
+type runState int
+
+const (
+	stateRunning runState = iota
+	stateShutDown
+)
+
+func NewDB(path string, backupPath string, backupInterval time.Duration) (*DB, error) {
 	opts := badger.DefaultOptions(path)
-	db, err := badger.Open(opts)
+	badgerDB, err := badger.Open(opts)
 	if err != nil {
 		return nil, err
 	}
 
-	return &DB{badger: db}, nil
+	if backupPath == "" {
+		backupPath = path + ".backup"
+	}
+	if backupInterval <= 0 {
+		backupInterval = defaultBackupInterval
+	}
+
+	runner := &backupRunner{
+		badger:     badgerDB,
+		backupPath: backupPath,
+		interval:   backupInterval,
+	}
+	runner.start()
+
+	return &DB{badger: badgerDB, backup: runner}, nil
 }
 
 func (db *DB) Close() error {
 	return db.badger.Close()
+}
+
+// Shutdown stops the backup runner and closes the database. Call from app on exit.
+func (db *DB) Shutdown() error {
+	if db.backup != nil {
+		db.backup.Shutdown()
+	}
+	return db.badger.Close()
+}
+
+func (b *backupRunner) start() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == stateShutDown {
+		return
+	}
+	b.ctx, b.cancel = context.WithCancel(context.Background())
+	b.wg.Add(1)
+	go b.runBackupLoop()
+}
+
+func (b *backupRunner) stop() {
+	if b.cancel != nil {
+		b.cancel()
+	}
+	b.wg.Wait()
+}
+
+func (b *backupRunner) Shutdown() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == stateShutDown {
+		return
+	}
+	b.stop()
+	b.state = stateShutDown
+}
+
+func (b *backupRunner) runBackupLoop() {
+	defer b.wg.Done()
+	ticker := time.NewTicker(b.interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-b.ctx.Done():
+			return
+		case <-ticker.C:
+			_, _ = b.doBackup()
+		}
+	}
+}
+
+func (b *backupRunner) doBackup() (version uint64, err error) {
+	f, err := os.Create(b.backupPath)
+	if err != nil {
+		return 0, err
+	}
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+	}()
+	version, err = b.badger.Backup(f, 0)
+	return version, err
 }
 
 func (db *DB) SetSong(songID int64, data []byte) error {
@@ -39,6 +142,9 @@ func (db *DB) GetSong(id int64) ([]byte, error) {
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -102,6 +208,9 @@ func (db *DB) GetAlbum(id int64) ([]byte, error) {
 
 	err := db.runTxnReadOnly(func(txn *badger.Txn) error {
 		item, err := txn.Get([]byte(key))
+		if errors.Is(err, badger.ErrKeyNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -226,10 +335,38 @@ func (db *DB) GetPlaybackSession() ([]byte, error) {
 	return res, nil
 }
 
+const maxRetries = 3
+
 func (db *DB) runTxnReadOnly(fn func(txn *badger.Txn) error) error {
-	return db.badger.View(fn)
+	var err error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err = db.badger.View(fn)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, badger.ErrConflict) {
+			return err
+		}
+		if attempt == maxRetries-1 {
+			return err
+		}
+	}
+	return err
 }
 
 func (db *DB) runTxnReadWrite(fn func(txn *badger.Txn) error) error {
-	return db.badger.Update(fn)
+	var err error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		err = db.badger.Update(fn)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, badger.ErrConflict) {
+			return err
+		}
+		if attempt == maxRetries-1 {
+			return err
+		}
+	}
+	return err
 }

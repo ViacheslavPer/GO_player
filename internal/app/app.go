@@ -33,7 +33,7 @@ func NewApp(dpPath string, albumID int64) (*App, error) {
 		return nil, errors.New("invalid album id")
 	}
 
-	db, err := storage.NewDB(dpPath)
+	db, err := storage.NewDB(dpPath, "", 0)
 	if err != nil {
 		return nil, err
 	}
