@@ -37,17 +37,23 @@ const (
 )
 
 func NewDB(path string, backupPath string, backupInterval time.Duration) (*DB, error) {
-	opts := badger.DefaultOptions(path)
-	badgerDB, err := badger.Open(opts)
-	if err != nil {
-		return nil, err
-	}
-
 	if backupPath == "" {
 		backupPath = path + ".backup"
 	}
 	if backupInterval <= 0 {
 		backupInterval = defaultBackupInterval
+	}
+
+	opts := badger.DefaultOptions(path)
+	badgerDB, err := badger.Open(opts)
+	if err != nil {
+		if restoreErr := restoreFromBackup(path, backupPath); restoreErr != nil {
+			return nil, err
+		}
+		badgerDB, err = badger.Open(opts)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	runner := &backupRunner{
@@ -64,7 +70,6 @@ func (db *DB) Close() error {
 	return db.badger.Close()
 }
 
-// Shutdown stops the backup runner and closes the database. Call from app on exit.
 func (db *DB) Shutdown() error {
 	if db.backup != nil {
 		db.backup.Shutdown()
@@ -109,7 +114,10 @@ func (b *backupRunner) runBackupLoop() {
 		case <-b.ctx.Done():
 			return
 		case <-ticker.C:
-			_, _ = b.doBackup()
+			_, err := b.doBackup()
+			if err != nil {
+				//TODO: handle error
+			}
 		}
 	}
 }
@@ -126,6 +134,42 @@ func (b *backupRunner) doBackup() (version uint64, err error) {
 	}()
 	version, err = b.badger.Backup(f, 0)
 	return version, err
+}
+
+func restoreFromBackup(path, backupPath string) error {
+	info, err := os.Stat(backupPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("backup path %s is a directory", backupPath)
+	}
+
+	if err := os.RemoveAll(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		return err
+	}
+
+	opts := badger.DefaultOptions(path)
+	db, err := badger.Open(opts)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	f, err := os.Open(backupPath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := db.Load(f, 16); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (db *DB) SetSong(songID int64, data []byte) error {

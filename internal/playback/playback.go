@@ -27,16 +27,16 @@ func (pc *PlaybackChain) Next(id int64) (int64, bool) {
 }
 
 func (pc *PlaybackChain) Forward() (int64, bool) {
-	if len(pc.ForwardStack) != 0 {
-		if pc.Current != 0 {
-			pc.BackStack = append(pc.BackStack, pc.Current)
-		}
-		pc.Current = pc.ForwardStack[len(pc.ForwardStack)-1]
-		pc.ForwardStack = pc.ForwardStack[:len(pc.ForwardStack)-1]
-		return pc.Current, true
+	if len(pc.ForwardStack) == 0 {
+		return 0, false
 	}
 
-	return 0, false
+	if pc.Current != 0 {
+		pc.BackStack = append(pc.BackStack, pc.Current)
+	}
+	pc.Current = pc.ForwardStack[len(pc.ForwardStack)-1]
+	pc.ForwardStack = pc.ForwardStack[:len(pc.ForwardStack)-1]
+	return pc.Current, true
 }
 
 func (pc *PlaybackChain) FreezeLearning() {

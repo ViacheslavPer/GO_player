@@ -75,14 +75,26 @@ func NewApp(dpPath string, albumID int64) (*App, error) {
 }
 
 func (a *App) start() {
-	a.wg.Add(2)
+	a.wg.Add(1)
 	go a.manageBaseGraphRebuild()
 }
 
-func (a *App) Stop() {
-	//mu?
-	a.cancel()
+func (a *App) stop() {
+	if a.cancel != nil {
+		a.cancel()
+	}
 	a.wg.Wait()
+}
+
+func (a *App) Shutdown() error {
+	a.stop()
+	if a.orch != nil {
+		a.orch.Shutdown()
+	}
+	if a.db != nil {
+		return a.db.Shutdown()
+	}
+	return nil
 }
 
 func (a *App) manageBaseGraphRebuild() {
@@ -122,61 +134,70 @@ func (a *App) manageRuntimeGraphTS() {
 			return
 		case <-ticker.C:
 			if a.orch == nil {
-				return //TODO: hadle error
+				return //TODO: handle error
 			}
 			pb := a.orch.GetPlayBackChain()
 			if pb == nil {
-				return //TODO: hadle error
+				return //TODO: handle error
 			}
 			err := a.catalog.SavePlaybackSession(pb)
 			if err != nil {
-				return //TODO: hadle error
+				return //TODO: handle error
 			}
 		}
 	}
 }
 
-// PlayNext — следующий трек. GUI вызывает после нажатия "вперёд".
-// Псевдокод: id, ok := a.orch.PlayNext(); если ok — сохранить сессию через a.catalog.SavePlaybackSession(orch.PlaybackChain()); вернуть id, ok
 func (a *App) PlayNext() (int64, bool) {
+	if a.orch == nil {
+		return 0, false
+	}
 	id, ok := a.orch.PlayNext()
-	// if ok { _ = a.catalog.SavePlaybackSession(*a.orch.PlaybackChain()) }
-	_, _ = a.catalog, a.orch
+	if ok {
+		if pb := a.orch.GetPlayBackChain(); pb != nil {
+			err := a.catalog.SavePlaybackSession(pb)
+			if err != nil {
+				return 0, false
+				//TODO: handle error
+			}
+		}
+	}
 	return id, ok
 }
 
-// PlayBack — предыдущий трек. GUI вызывает после нажатия "назад".
-// Псевдокод: id, ok := a.orch.PlayBack(); если ok — сохранить сессию; вернуть id, ok
 func (a *App) PlayBack() (int64, bool) {
+	if a.orch == nil {
+		return 0, false
+	}
 	id, ok := a.orch.PlayBack()
-	_, _ = a.catalog, a.orch
+	if ok {
+		if pb := a.orch.GetPlayBackChain(); pb != nil {
+			err := a.catalog.SavePlaybackSession(pb)
+			if err != nil {
+				return 0, false
+				//TODO: handle
+			}
+		}
+	}
 	return id, ok
 }
 
-// ProcessFeedback — фидбек по треку (дослушал/скип). Вызывать после окончания или смены трека.
-// Псевдокод: a.orch.ProcessFeedbak(fromID, toID, listened, duration); при ребилде — a.catalog.SaveBaseGraph(a.albumID, a.orch.BaseGraph())
 func (a *App) ProcessFeedback(fromID, toID int64, listened, duration float64) {
+	if a.orch == nil {
+		return
+	}
 	a.orch.ProcessFeedback(fromID, toID, listened, duration)
-	// при ребилде (если оркестратор его сделал) — a.catalog.SaveBaseGraph(a.albumID, a.orch.BaseGraph())
-	_, _, _ = a.catalog, a.albumID, a.orch
 }
 
-// ListSongs — список треков для GUI. Делегирует в Catalog.
+// for tests
 func (a *App) ListSongs() ([]*models.Song, error) {
 	return a.catalog.ListSongs()
 }
 
-// ListAlbums — список альбомов для GUI. Делегирует в Catalog.
 func (a *App) ListAlbums() ([]*models.Album, error) {
 	return a.catalog.ListAlbums()
 }
 
-// Orchestrator — доступ к оркестратору (для тестов или если GUI нужен прямой доступ).
 func (a *App) Orchestrator() *orchestrator.Orchestrator {
 	return a.orch
-}
-
-// Close — закрыть хранилище. Вызывать при выходе из приложения.
-func (a *App) Close() error {
-	return a.db.Close()
 }
