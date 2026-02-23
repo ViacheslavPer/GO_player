@@ -23,12 +23,9 @@ const (
 	stateShutDown
 )
 
-// closedChan — канал, уже закрытый при инициализации; возвращается из GetBGRebuildChan после Shutdown.
-var closedChan = func() chan struct{} { c := make(chan struct{}); close(c); return c }()
-
 type Orchestrator struct {
 	baseGraph           *basegraph.BaseGraph
-	rebuildChan         chan struct{}
+	rebuildChan         chan bool
 	runtimeGraph        atomic.Pointer[runtime.RuntimeGraph]
 	lifecycle           atomic.Pointer[lifecycle]
 	maxRuntimeGraphAge  time.Duration
@@ -63,7 +60,7 @@ func NewOrchestrator(bg *basegraph.BaseGraph, rg *runtime.RuntimeGraph, s *selec
 
 	o := &Orchestrator{
 		baseGraph:           bg,
-		rebuildChan:         make(chan struct{}),
+		rebuildChan:         make(chan bool),
 		maxRuntimeGraphAge:  time.Hour,
 		maxRuntimeGraphDiff: 50.0,
 		diffChan:            make(chan struct{}, 5),
@@ -71,6 +68,7 @@ func NewOrchestrator(bg *basegraph.BaseGraph, rg *runtime.RuntimeGraph, s *selec
 		playbackChain:       pb,
 		wg:                  wg,
 		mu:                  sync.RWMutex{},
+		state:               stateRunning,
 	}
 
 	o.runtimeGraph.Store(rg)
@@ -98,12 +96,9 @@ func (o *Orchestrator) GetPlayBackChain() *playback.PlaybackChain {
 	return o.playbackChain
 }
 
-func (o *Orchestrator) GetBGRebuildChan() <-chan struct{} {
+func (o *Orchestrator) GetBGRebuildChan() <-chan bool {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
-	if o.state == stateShutDown {
-		return closedChan
-	}
 	return o.rebuildChan
 }
 
@@ -122,6 +117,7 @@ func (o *Orchestrator) rebuildRuntime(rebuildReason string) {
 	for fromID := range runtimePenalty {
 		for toID := range runtimePenalty[fromID] {
 			o.baseGraphPenalty(fromID, toID)
+			addChainSignal(o, o.rebuildChan, true)
 		}
 	}
 
@@ -150,6 +146,8 @@ func (o *Orchestrator) Shutdown() {
 		return
 	}
 	o.stop()
+	close(o.diffChan)
+	close(o.rebuildChan)
 	o.state = stateShutDown
 }
 
@@ -220,7 +218,7 @@ func (o *Orchestrator) manageRuntimeGraphDiffts() {
 	}
 }
 
-func (o *Orchestrator) addChainSignal(chain chan struct{}) {
+func addChainSignal[T any](o *Orchestrator, ch chan T, v T) {
 	lc := o.lifecycle.Load()
 	if lc == nil {
 		return
@@ -228,12 +226,12 @@ func (o *Orchestrator) addChainSignal(chain chan struct{}) {
 	select {
 	case <-lc.ctx.Done():
 		return
-	case chain <- struct{}{}:
+	case ch <- v:
 		return
 	}
 }
 
-func (o *Orchestrator) ProcessFeedbak(fromID, toID int64, listened, duration float64) {
+func (o *Orchestrator) ProcessFeedback(fromID, toID int64, listened, duration float64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.state == stateShutDown {
@@ -255,7 +253,7 @@ func (o *Orchestrator) ProcessFeedbak(fromID, toID int64, listened, duration flo
 		rg.Penalty(fromID, toID, 1)
 		rg.AddCooldown(fromID, toID, 0.1)
 	}
-	o.addChainSignal(o.diffChan)
+	addChainSignal(o, o.diffChan, struct{}{})
 }
 
 func (o *Orchestrator) baseGraphPenalty(fromID, toID int64) {

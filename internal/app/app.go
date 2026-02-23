@@ -19,7 +19,7 @@ type App struct {
 	catalog              catalog.Catalog
 	albumID              int64
 	orch                 *orchestrator.Orchestrator
-	baseGraphRebuildChan <-chan struct{}
+	baseGraphRebuildChan <-chan bool
 	ctx                  context.Context
 	cancel               context.CancelFunc
 	wg                   *sync.WaitGroup
@@ -33,9 +33,6 @@ func NewApp(dpPath string, albumID int64) (*App, error) {
 		return nil, errors.New("invalid album id")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	wg := &sync.WaitGroup{}
-
 	db, err := storage.NewDB(dpPath)
 	if err != nil {
 		return nil, err
@@ -44,6 +41,12 @@ func NewApp(dpPath string, albumID int64) (*App, error) {
 	cat := catalog.NewCatalog(db)
 
 	edges, err := cat.LoadBaseGraphEdges(albumID)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+
+	pb, err := cat.LoadPlaybackSession()
 	if err != nil {
 		_ = db.Close()
 		return nil, err
@@ -59,14 +62,11 @@ func NewApp(dpPath string, albumID int64) (*App, error) {
 	rg := runtime.NewRuntimeGraph()
 	rg.BuildFromBase(bg)
 
-	pb, err := cat.LoadPlaybackSession()
-	if err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-
 	orch := orchestrator.NewOrchestrator(bg, rg, s, pb)
 	bgChan := orch.GetBGRebuildChan()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wg := &sync.WaitGroup{}
 
 	app := &App{db: db, catalog: cat, albumID: albumID, orch: orch, baseGraphRebuildChan: bgChan, ctx: ctx, cancel: cancel, wg: wg}
 	app.start()
@@ -91,7 +91,10 @@ func (a *App) manageBaseGraphRebuild() {
 		select {
 		case <-a.ctx.Done():
 			return
-		case <-a.baseGraphRebuildChan:
+		case _, ok := <-a.baseGraphRebuildChan:
+			if !ok {
+				return
+			}
 			if a.orch == nil {
 				return //TODO: hadle error
 			}
@@ -153,7 +156,7 @@ func (a *App) PlayBack() (int64, bool) {
 // ProcessFeedback — фидбек по треку (дослушал/скип). Вызывать после окончания или смены трека.
 // Псевдокод: a.orch.ProcessFeedbak(fromID, toID, listened, duration); при ребилде — a.catalog.SaveBaseGraph(a.albumID, a.orch.BaseGraph())
 func (a *App) ProcessFeedback(fromID, toID int64, listened, duration float64) {
-	a.orch.ProcessFeedbak(fromID, toID, listened, duration)
+	a.orch.ProcessFeedback(fromID, toID, listened, duration)
 	// при ребилде (если оркестратор его сделал) — a.catalog.SaveBaseGraph(a.albumID, a.orch.BaseGraph())
 	_, _, _ = a.catalog, a.albumID, a.orch
 }
