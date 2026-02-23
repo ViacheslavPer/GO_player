@@ -131,6 +131,14 @@ func (o *Orchestrator) stopLocked() {
 		h.cancel()
 	}
 	o.wg.Wait()
+	for {
+		select {
+		case <-o.diffChan:
+		case <-o.rebuildChan:
+		default:
+			return
+		}
+	}
 }
 
 func (o *Orchestrator) manageRuntimeGraphTS() {
