@@ -16,6 +16,16 @@ type lifecycle struct {
 	cancel context.CancelFunc
 }
 
+type runState int
+
+const (
+	stateRunning runState = iota
+	stateShutDown
+)
+
+// closedChan — канал, уже закрытый при инициализации; возвращается из GetBGRebuildChan после Shutdown.
+var closedChan = func() chan struct{} { c := make(chan struct{}); close(c); return c }()
+
 type Orchestrator struct {
 	baseGraph           *basegraph.BaseGraph
 	rebuildChan         chan struct{}
@@ -28,6 +38,7 @@ type Orchestrator struct {
 	playbackChain       *playback.PlaybackChain
 	wg                  *sync.WaitGroup
 	mu                  sync.RWMutex
+	state               runState
 }
 
 func NewOrchestrator(bg *basegraph.BaseGraph, rg *runtime.RuntimeGraph, s *selector.Selector, pb *playback.PlaybackChain) *Orchestrator {
@@ -72,24 +83,36 @@ func NewOrchestrator(bg *basegraph.BaseGraph, rg *runtime.RuntimeGraph, s *selec
 func (o *Orchestrator) GetBaseGraph() *basegraph.BaseGraph {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
+	if o.state == stateShutDown {
+		return nil
+	}
 	return o.baseGraph
 }
 
 func (o *Orchestrator) GetPlayBackChain() *playback.PlaybackChain {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
+	if o.state == stateShutDown {
+		return nil
+	}
 	return o.playbackChain
 }
 
 func (o *Orchestrator) GetBGRebuildChan() <-chan struct{} {
 	o.mu.RLock()
 	defer o.mu.RUnlock()
+	if o.state == stateShutDown {
+		return closedChan
+	}
 	return o.rebuildChan
 }
 
 func (o *Orchestrator) rebuildRuntime(rebuildReason string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.state == stateShutDown {
+		return
+	}
 
 	current := o.runtimeGraph.Load()
 	if current == nil {
@@ -102,7 +125,7 @@ func (o *Orchestrator) rebuildRuntime(rebuildReason string) {
 		}
 	}
 
-	o.stopLocked()
+	o.stop()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	o.lifecycle.Store(&lifecycle{ctx: ctx, cancel: cancel})
@@ -120,13 +143,17 @@ func (o *Orchestrator) start() {
 	go o.manageRuntimeGraphDiffts()
 }
 
-func (o *Orchestrator) Stop() {
+func (o *Orchestrator) Shutdown() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.stopLocked()
+	if o.state == stateShutDown {
+		return
+	}
+	o.stop()
+	o.state = stateShutDown
 }
 
-func (o *Orchestrator) stopLocked() {
+func (o *Orchestrator) stop() {
 	if h := o.lifecycle.Load(); h != nil {
 		h.cancel()
 	}
@@ -209,6 +236,9 @@ func (o *Orchestrator) addChainSignal(chain chan struct{}) {
 func (o *Orchestrator) ProcessFeedbak(fromID, toID int64, listened, duration float64) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.state == stateShutDown {
+		return
+	}
 
 	rg := o.runtimeGraph.Load()
 	if rg == nil {
@@ -235,6 +265,9 @@ func (o *Orchestrator) baseGraphPenalty(fromID, toID int64) {
 func (o *Orchestrator) PlayNext() (int64, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.state == stateShutDown {
+		return 0, false
+	}
 
 	id, ok := o.playForward()
 	if ok {
@@ -278,6 +311,9 @@ func (o *Orchestrator) playForward() (int64, bool) {
 func (o *Orchestrator) PlayBack() (int64, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	if o.state == stateShutDown {
+		return 0, false
+	}
 
 	id, ok := o.playbackChain.Back()
 	if !ok {
