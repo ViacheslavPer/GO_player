@@ -1,5 +1,3 @@
-// Package app — точка входа и координация: создаёт DB, Catalog, Orchestrator,
-// загружает состояние через Catalog, отдаёт GUI методы для управления воспроизведением.
 package app
 
 import (
@@ -10,30 +8,34 @@ import (
 	"GO_player/internal/models"
 	"GO_player/internal/orchestrator"
 	"GO_player/internal/storage"
+	"context"
+	"errors"
+	"sync"
+	"time"
 )
 
-// App — держит хранилище, прослойку и оркестратор. GUI вызывает методы App, не трогая storage и orchestrator напрямую.
 type App struct {
-	db      *storage.DB
-	catalog catalog.Catalog
-	orch    *orchestrator.Orchestrator
-	albumID int64 // какой альбом загружен (для SaveBaseGraph при ребилде)
+	db                   *storage.DB
+	catalog              catalog.Catalog
+	albumID              int64
+	orch                 *orchestrator.Orchestrator
+	baseGraphRebuildChan <-chan struct{}
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	wg                   *sync.WaitGroup
 }
 
-// NewApp создаёт DB, Catalog, загружает состояние через Catalog и собирает Orchestrator.
-// Псевдокод:
-//
-//	db := storage.NewDB(dpPath)
-//	cat := catalog.NewCatalog(db)
-//	edges := cat.LoadBaseGraphEdges(albumID)   // например 0
-//	session := cat.LoadPlaybackSession()       // опционально
-//	bg := basegraph.NewBaseGraph(); bg.SetEdges(edges)
-//	rg := runtime.NewRuntimeGraph(); rg.BuildFromBase(bg)
-//	s := selector.NewSelector()
-//	orch := orchestrator.NewOrchestrator(bg, rg, s)
-//	при необходимости: восстановить session в orch (если появится API)
-//	return App{db, cat, orch, albumID}
 func NewApp(dpPath string, albumID int64) (*App, error) {
+	if dpPath == "" {
+		return nil, errors.New("empty db path")
+	}
+	if albumID < 0 {
+		return nil, errors.New("invalid album id")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	wg := &sync.WaitGroup{}
+
 	db, err := storage.NewDB(dpPath)
 	if err != nil {
 		return nil, err
@@ -57,11 +59,78 @@ func NewApp(dpPath string, albumID int64) (*App, error) {
 	rg := runtime.NewRuntimeGraph()
 	rg.BuildFromBase(bg)
 
-	orch := orchestrator.NewOrchestrator(bg, rg, s)
+	pb, err := cat.LoadPlaybackSession()
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
-	// псевдокод: session, _ := cat.LoadPlaybackSession(); при наличии SetPlaybackChain(orch, session) — восстановить
+	orch := orchestrator.NewOrchestrator(bg, rg, s, pb)
+	bgChan := orch.GetBGRebuildChan()
 
-	return &App{db: db, catalog: cat, orch: orch, albumID: albumID}, nil
+	app := &App{db: db, catalog: cat, albumID: albumID, orch: orch, baseGraphRebuildChan: bgChan, ctx: ctx, cancel: cancel, wg: wg}
+	app.start()
+
+	return app, nil
+}
+
+func (a *App) start() {
+	a.wg.Add(2)
+	go a.manageBaseGraphRebuild()
+}
+
+func (a *App) Stop() {
+	//mu?
+	a.cancel()
+	a.wg.Wait()
+}
+
+func (a *App) manageBaseGraphRebuild() {
+	defer a.wg.Done()
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-a.baseGraphRebuildChan:
+			if a.orch == nil {
+				return //TODO: hadle error
+			}
+			bg := a.orch.GetBaseGraph()
+			if bg == nil {
+				return //TODO: hadle error
+			}
+			err := a.catalog.SaveBaseGraph(a.albumID, bg)
+			if err != nil {
+				return //TODO: hadle error
+			}
+		}
+	}
+}
+
+func (a *App) manageRuntimeGraphTS() {
+	defer a.wg.Done()
+
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-a.ctx.Done():
+			return
+		case <-ticker.C:
+			if a.orch == nil {
+				return //TODO: hadle error
+			}
+			pb := a.orch.GetPlayBackChain()
+			if pb == nil {
+				return //TODO: hadle error
+			}
+			err := a.catalog.SavePlaybackSession(pb)
+			if err != nil {
+				return //TODO: hadle error
+			}
+		}
+	}
 }
 
 // PlayNext — следующий трек. GUI вызывает после нажатия "вперёд".
