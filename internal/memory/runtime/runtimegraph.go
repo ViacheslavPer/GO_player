@@ -17,6 +17,7 @@ type RuntimeGraph struct {
 	cooldowns    map[int64]map[int64]cooldownEntry
 	tau          float64
 	penalties    map[int64]map[int64]float64
+	bonuses      map[int64]map[int64]float64
 	buildVersion int64
 	buildReason  string
 	timestamp    time.Time
@@ -29,6 +30,7 @@ func NewRuntimeGraph() *RuntimeGraph {
 		edges:     make(map[int64]map[int64]float64),
 		cooldowns: make(map[int64]map[int64]cooldownEntry),
 		penalties: make(map[int64]map[int64]float64),
+		bonuses:   make(map[int64]map[int64]float64),
 		tau:       180,
 	}
 }
@@ -68,18 +70,29 @@ func (graph *RuntimeGraph) GetPenalty() map[int64]map[int64]float64 {
 	return copyOuter
 }
 
+func (graph *RuntimeGraph) GetBonuses() map[int64]map[int64]float64 {
+	graph.mu.RLock()
+	defer graph.mu.RUnlock()
+
+	copyOuter := make(map[int64]map[int64]float64, len(graph.bonuses))
+	for fromID, inner := range graph.bonuses {
+		copyOuter[fromID] = copyMap(inner)
+	}
+	return copyOuter
+}
+
 func (graph *RuntimeGraph) Reinforce(fromID, toID int64, value float64) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
 
-	if graph.edges[fromID] == nil {
-		graph.edges[fromID] = make(map[int64]float64)
+	if graph.bonuses[fromID] == nil {
+		graph.bonuses[fromID] = make(map[int64]float64)
 	}
-	if graph.edges[0] == nil {
-		graph.edges[0] = make(map[int64]float64)
+	if graph.bonuses[0] == nil {
+		graph.bonuses[0] = make(map[int64]float64)
 	}
-	graph.edges[0][toID] += value
-	graph.edges[fromID][toID] += value
+	graph.bonuses[0][toID] += value
+	graph.bonuses[fromID][toID] += value
 	graph.diffts++
 }
 
@@ -126,8 +139,6 @@ func (graph *RuntimeGraph) RebuildFromBase(base *basegraph.BaseGraph, buildReaso
 	graph.copyBase(base, graph.buildVersion, buildReason)
 }
 
-// CopyBase is an exported, concurrency-safe wrapper used primarily in tests.
-// It delegates to the internal copyBase implementation under the graph mutex.
 func (graph *RuntimeGraph) CopyBase(base *basegraph.BaseGraph, buildVersion int64, buildReason string) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
@@ -176,6 +187,14 @@ func (graph *RuntimeGraph) calculateFines(fromID int64) map[int64]float64 {
 	}
 
 	fined := copyMap(graph.edges[fromID])
+
+	if graph.bonuses[fromID] != nil {
+		for toID := range fined {
+			if cd, ok := graph.bonuses[fromID][toID]; ok {
+				fined[toID] += cd
+			}
+		}
+	}
 
 	if graph.cooldowns[fromID] != nil {
 		for toID := range fined {

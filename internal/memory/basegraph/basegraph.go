@@ -13,9 +13,13 @@ func NewBaseGraph() *BaseGraph {
 	}
 }
 
-func (graph *BaseGraph) Reinforce(fromID, toID int64) {
+func (graph *BaseGraph) Reinforce(fromID, toID int64, value float64) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
+
+	if value <= 0 {
+		return
+	}
 
 	if graph.edges[fromID] == nil {
 		graph.edges[fromID] = make(map[int64]float64)
@@ -23,24 +27,34 @@ func (graph *BaseGraph) Reinforce(fromID, toID int64) {
 	if graph.edges[0] == nil {
 		graph.edges[0] = make(map[int64]float64)
 	}
-	graph.edges[0][toID]++
-	graph.edges[fromID][toID]++
+	graph.edges[0][toID] += value
+	graph.edges[fromID][toID] += value
 }
 
-func (graph *BaseGraph) Penalty(fromID, toID int64) {
+func (graph *BaseGraph) Penalty(fromID, toID int64, value float64) {
 	graph.mu.Lock()
 	defer graph.mu.Unlock()
+
+	if value <= 0 {
+		return
+	}
 
 	if graph.edges[fromID] == nil {
 		return
 	}
-	if graph.edges[fromID][toID] > 0 {
-		graph.edges[fromID][toID]--
+	if graph.edges[fromID][toID] >= value {
+		graph.edges[fromID][toID] -= value
+	} else {
+		//TODO: handle error
 	}
-	if graph.edges[0] != nil {
-		if graph.edges[0][toID] > 0 {
-			graph.edges[0][toID]--
-		}
+
+	if graph.edges[0] == nil {
+		return
+	}
+	if graph.edges[0][toID] >= value {
+		graph.edges[0][toID] -= value
+	} else {
+		//TODO: handle error
 	}
 }
 

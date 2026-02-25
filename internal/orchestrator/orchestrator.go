@@ -113,12 +113,22 @@ func (o *Orchestrator) rebuildRuntime(rebuildReason string) {
 	if current == nil {
 		return
 	}
+
+	runtimeBonuses := current.GetBonuses()
+	for fromID := range runtimeBonuses {
+		for toID := range runtimeBonuses[fromID] {
+			o.baseGraph.Reinforce(fromID, toID, runtimeBonuses[fromID][toID])
+		}
+	}
+
 	runtimePenalty := current.GetPenalty()
 	for fromID := range runtimePenalty {
 		for toID := range runtimePenalty[fromID] {
-			o.baseGraphPenalty(fromID, toID)
-			addChainSignal(o, o.rebuildChan, true)
+			o.baseGraph.Penalty(fromID, toID, runtimePenalty[fromID][toID])
 		}
+	}
+	if runtimePenalty != nil || runtimeBonuses != nil {
+		addChainSignal(o, o.rebuildChan, true)
 	}
 
 	o.stop()
@@ -237,6 +247,9 @@ func (o *Orchestrator) ProcessFeedback(fromID, toID int64, listened, duration fl
 	if o.state == stateShutDown {
 		return
 	}
+	if o.playbackChain.LearningFrozen {
+		return
+	}
 
 	rg := o.runtimeGraph.Load()
 	if rg == nil {
@@ -254,10 +267,6 @@ func (o *Orchestrator) ProcessFeedback(fromID, toID int64, listened, duration fl
 		rg.AddCooldown(fromID, toID, 0.1)
 	}
 	addChainSignal(o, o.diffChan, struct{}{})
-}
-
-func (o *Orchestrator) baseGraphPenalty(fromID, toID int64) {
-	o.baseGraph.Penalty(fromID, toID)
 }
 
 func (o *Orchestrator) PlayNext() (int64, bool) {
